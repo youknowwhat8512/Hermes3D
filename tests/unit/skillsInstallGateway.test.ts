@@ -140,13 +140,49 @@ describe("skills install gateway", () => {
           agentName: "soundhermes",
         },
       })
-    ).rejects.toThrow(/gateway root workspace/i);
+    ).rejects.toThrow(/게이트웨이 루트 워크스페이스/);
 
     expect(call).toHaveBeenCalledTimes(3);
     expect(call).toHaveBeenNthCalledWith(1, "agents.files.get", {
       agentId: "soundhermes",
       name: "IDENTITY.md",
     });
+  });
+
+  it("reports a readable error when the gateway omits workspaceDir instead of throwing on undefined", async () => {
+    const call = vi.fn();
+
+    await expect(
+      installPackagedSkillViaGatewayAgent({
+        client: { call } as unknown as GatewayClient,
+        request: {
+          packageId: "todo-board",
+          source: "hermes-workspace",
+          workspaceDir: undefined as unknown as string,
+          managedSkillsDir: undefined as unknown as string,
+        },
+      })
+    ).rejects.toThrow(/workspaceDir 값이 필요합니다/);
+
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("reports a readable error when packageId is missing instead of throwing on undefined", async () => {
+    const call = vi.fn();
+
+    await expect(
+      installPackagedSkillViaGatewayAgent({
+        client: { call } as unknown as GatewayClient,
+        request: {
+          packageId: undefined as unknown as string,
+          source: "hermes-workspace",
+          workspaceDir: "/home/hermes/workspace-demo",
+          managedSkillsDir: "/home/hermes/.hermes/skills",
+        },
+      })
+    ).rejects.toThrow(/packageId 값이 필요합니다/);
+
+    expect(call).not.toHaveBeenCalled();
   });
 
   it("repairs the workspace from agent file provenance before creating the installer agent", async () => {

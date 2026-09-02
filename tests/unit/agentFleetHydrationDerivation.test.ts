@@ -165,4 +165,61 @@ describe("deriveHydrateAgentFleetResult", () => {
     expect(result.summaryPatches.length).toBeGreaterThan(0);
     expect(result.suggestedSelectedAgentId).toBe("agent-2");
   });
+
+  it("falls back to the agent's own model when its session row carries none", () => {
+    const result = deriveHydrateAgentFleetResult({
+      gatewayUrl: "ws://127.0.0.1:9137",
+      configSnapshot: null,
+      settings: null,
+      execApprovalsSnapshot: null,
+      agentsResult: {
+        defaultId: "findy",
+        mainKey: "main",
+        agents: [
+          { id: "findy", name: "Findy", model: "claude-opus-4-5", provider: "anthropic" },
+          { id: "clody", name: "Clody", model: "claude-sonnet-4-6", provider: "claude-cli" },
+          { id: "unpinned", name: "Unpinned" },
+        ],
+      },
+      // A backend that answers agents.list but not sessions.list per agent —
+      // without the roster fallback each desk showed no model at all.
+      mainSessionByAgentId: new Map(),
+      statusSummary: null,
+      previewResult: null,
+    });
+
+    expect(result.seeds.map((seed) => seed.model)).toEqual([
+      "anthropic/claude-opus-4-5",
+      "claude-cli/claude-sonnet-4-6",
+      null,
+    ]);
+  });
+
+  it("prefers the live session model over the agent's configured pin", () => {
+    const result = deriveHydrateAgentFleetResult({
+      gatewayUrl: "ws://127.0.0.1:9137",
+      configSnapshot: null,
+      settings: null,
+      execApprovalsSnapshot: null,
+      agentsResult: {
+        defaultId: "clody",
+        mainKey: "main",
+        agents: [{ id: "clody", name: "Clody", model: "claude-sonnet-4-6", provider: "claude-cli" }],
+      },
+      mainSessionByAgentId: new Map([
+        [
+          "clody",
+          {
+            key: "agent:clody:main",
+            modelProvider: "anthropic",
+            model: "claude-opus-4-5",
+          },
+        ],
+      ]),
+      statusSummary: null,
+      previewResult: null,
+    });
+
+    expect(result.seeds[0]?.model).toBe("anthropic/claude-opus-4-5");
+  });
 });

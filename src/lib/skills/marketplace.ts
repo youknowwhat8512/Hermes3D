@@ -1,5 +1,4 @@
 import {
-  buildSkillMissingDetails,
   canRemoveSkill,
   deriveSkillReadinessState,
   groupSkillsBySource,
@@ -47,83 +46,153 @@ const SKILL_MARKETPLACE_OVERRIDES: Record<
   Partial<SkillMarketplaceMetadata>
 > = {
   github: {
-    category: "Engineering",
-    tagline: "Turns repository operations into a one-step teammate workflow.",
+    category: "엔지니어링",
+    tagline: "저장소 작업을 한 단계로 처리하는 팀원 워크플로로 만들어 줍니다.",
     capabilities: [
-      "Pull request support",
-      "Issue context",
-      "Repository operations",
+      "풀 리퀘스트 지원",
+      "이슈 문맥 파악",
+      "저장소 작업 수행",
     ],
     featured: true,
-    editorBadge: "Popular",
+    editorBadge: "인기",
     rating: 4.9,
     installs: 18240,
   },
   figma: {
-    category: "Design",
-    tagline: "Connects design files, specs, and implementation context.",
-    capabilities: ["Design context", "Asset lookup", "Spec handoff"],
+    category: "디자인",
+    tagline: "디자인 파일, 스펙, 구현 문맥을 이어 줍니다.",
+    capabilities: ["디자인 문맥 파악", "에셋 조회", "스펙 핸드오프"],
     featured: true,
-    editorBadge: "Editor pick",
+    editorBadge: "에디터 추천",
     rating: 4.8,
     installs: 9640,
   },
   slack: {
-    category: "Communication",
-    tagline: "Keeps agents plugged into team channels and notifications.",
+    category: "커뮤니케이션",
+    tagline: "에이전트를 팀 채널과 알림에 계속 연결해 둡니다.",
     capabilities: [
-      "Channel updates",
-      "Message drafting",
-      "Notification routing",
+      "채널 소식 확인",
+      "메시지 초안 작성",
+      "알림 라우팅",
     ],
     featured: true,
     rating: 4.7,
     installs: 14110,
   },
   linear: {
-    category: "Planning",
-    tagline:
-      "Brings issue tracking and execution loops directly into agent workflows.",
-    capabilities: ["Issue lookup", "Status updates", "Planning workflows"],
+    category: "기획",
+    tagline: "이슈 추적과 실행 루프를 에이전트 워크플로 안으로 가져옵니다.",
+    capabilities: ["이슈 조회", "상태 업데이트", "기획 워크플로"],
     featured: true,
     rating: 4.7,
     installs: 11980,
   },
   "todo-board": {
-    category: "Productivity",
+    category: "생산성",
     tagline:
-      "Gives agents a shared workspace TODO board with blocked-task tracking.",
+      "차단된 작업까지 추적하는 공용 워크스페이스 TODO 보드를 에이전트에게 제공합니다.",
     capabilities: [
-      "Task capture",
-      "Blocked tracking",
-      "Shared workspace state",
+      "할 일 기록",
+      "차단 상태 추적",
+      "워크스페이스 상태 공유",
     ],
     featured: true,
-    editorBadge: "Hermes3D test",
+    editorBadge: "Hermes3D 테스트",
     hideStats: true,
   },
   "task-manager": {
-    category: "Productivity",
+    category: "생산성",
     tagline:
-      "Turns actionable requests into persistent shared tasks that power the Hermes3D Kanban board.",
+      "실행이 필요한 요청을 지속되는 공용 작업으로 만들어 Hermes3D 칸반 보드를 움직입니다.",
     capabilities: [
-      "Automatic task capture",
-      "Task lifecycle tracking",
-      "Shared Kanban state",
+      "작업 자동 기록",
+      "작업 생애주기 추적",
+      "칸반 상태 공유",
     ],
     featured: true,
-    editorBadge: "Kanban core",
+    editorBadge: "칸반 핵심",
     hideStats: true,
   },
   soundhermes: {
-    category: "Audio",
+    category: "오디오",
     tagline:
-      "Lets agents search Spotify, control playback, and return music links on the current channel.",
-    capabilities: ["Spotify search", "Playback control", "Same-channel link sharing"],
+      "에이전트가 Spotify를 검색하고 재생을 제어하며 현재 채널에 음악 링크를 돌려줍니다.",
+    capabilities: ["Spotify 검색", "재생 제어", "같은 채널로 링크 공유"],
     featured: true,
-    editorBadge: "Office demo",
+    editorBadge: "오피스 데모",
     hideStats: true,
   },
+};
+
+const MARKETPLACE_COLLECTION_LABELS: Record<
+  SkillMarketplaceCollectionId,
+  string
+> = {
+  hermes3d: "Hermes3D",
+  featured: "추천",
+  installed: "설치됨",
+  "setup-required": "설정 필요",
+  "built-in": "기본 제공 스킬",
+  workspace: "워크스페이스 스킬",
+  extra: "추가 스킬",
+  other: "기타 스킬",
+};
+
+const OS_LABELS: Record<string, string> = {
+  darwin: "macOS",
+  linux: "Linux",
+  win32: "Windows",
+  windows: "Windows",
+};
+
+const normalizeList = (values: string[] | undefined): string[] => {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return values
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0);
+};
+
+/**
+ * Korean copy for the marketplace surface. The shared
+ * `buildSkillMissingDetails` helper stays English because agent/system skill
+ * panels outside the marketplace still render it.
+ */
+export const buildLocalizedSkillMissingDetails = (
+  skill: SkillStatusEntry,
+): string[] => {
+  const details: string[] = [];
+
+  const bins = normalizeList(skill.missing.bins);
+  if (bins.length > 0) {
+    details.push(`설치가 필요한 도구: ${bins.join(", ")}`);
+  }
+
+  const anyBins = normalizeList(skill.missing.anyBins);
+  if (anyBins.length > 0) {
+    details.push(`다음 중 하나를 설치하세요: ${anyBins.join(" | ")}`);
+  }
+
+  const env = normalizeList(skill.missing.env);
+  if (env.length > 0) {
+    details.push(`게이트웨이 환경 변수에 설정이 필요한 값: ${env.join(", ")}`);
+  }
+
+  const config = normalizeList(skill.missing.config);
+  if (config.length > 0) {
+    details.push(`hermes.json에 설정이 필요한 값: ${config.join(", ")}`);
+  }
+
+  const os = normalizeList(skill.missing.os);
+  if (os.length > 0) {
+    const labels = os.map(
+      (value) => OS_LABELS[value.toLowerCase()] ?? value,
+    );
+    details.push(`지원 운영체제: ${labels.join(", ")}`);
+  }
+
+  return details;
 };
 
 const hashString = (value: string): number => {
@@ -144,19 +213,19 @@ const titleCaseWords = (value: string): string =>
 const buildFallbackCapabilities = (skill: SkillStatusEntry): string[] => {
   const capabilities: string[] = [];
   if (skill.primaryEnv) {
-    capabilities.push(`Uses ${skill.primaryEnv}.`);
+    capabilities.push(`${skill.primaryEnv} 환경 변수를 사용합니다.`);
   }
   if (skill.install.length > 0) {
-    capabilities.push("Supports guided dependency install.");
+    capabilities.push("가이드 방식의 의존성 설치를 지원합니다.");
   }
   if (skill.always) {
-    capabilities.push("Always available by policy.");
+    capabilities.push("정책상 항상 사용할 수 있습니다.");
   }
   if (skill.homepage) {
-    capabilities.push("Has external docs.");
+    capabilities.push("외부 문서가 제공됩니다.");
   }
   if (capabilities.length === 0) {
-    capabilities.push("Reusable operational workflow.");
+    capabilities.push("재사용 가능한 운영 워크플로입니다.");
   }
   return capabilities.slice(0, 3);
 };
@@ -169,27 +238,27 @@ const buildFallbackMetadata = (
   const seed = hashString(`${normalizedKey}:${source}`);
   const category =
     skill.bundled || source === "hermes-bundled"
-      ? "Built-in"
+      ? "기본 제공"
       : source === "hermes-managed"
-        ? "Installed"
+        ? "설치됨"
         : source === "hermes-workspace"
-          ? "Workspace"
+          ? "워크스페이스"
           : source === "hermes-extra"
-            ? "Community"
-            : "Automation";
+            ? "커뮤니티"
+            : "자동화";
   const trustLabel =
     skill.bundled || source === "hermes-bundled"
-      ? "Verified"
+      ? "검증됨"
       : source === "hermes-managed"
-        ? "Managed"
+        ? "관리됨"
         : source === "hermes-workspace"
-          ? "Workspace"
-          : "Community";
+          ? "워크스페이스"
+          : "커뮤니티";
   return {
     category,
     tagline:
       skill.description.trim() ||
-      `${titleCaseWords(skill.name)} capability pack.`,
+      `${titleCaseWords(skill.name)} 기능 팩입니다.`,
     trustLabel,
     capabilities: buildFallbackCapabilities(skill),
     featured: skill.bundled || source === "hermes-managed",
@@ -227,10 +296,10 @@ export const buildSkillMarketplaceEntry = (
   skill: SkillStatusEntry,
 ): SkillMarketplaceEntry => {
   const packagedSkill = getPackagedSkillBySkillKey(skill.skillKey);
-  const missingDetails = buildSkillMissingDetails(skill);
+  const missingDetails = buildLocalizedSkillMissingDetails(skill);
   if (packagedSkill && !skill.baseDir.trim()) {
     missingDetails.unshift(
-      "Install this packaged Hermes3D skill to make it available on the gateway.",
+      "이 Hermes3D 패키지 스킬을 설치하면 게이트웨이에서 사용할 수 있습니다.",
     );
   }
   return {
@@ -262,14 +331,22 @@ export const buildSkillMarketplaceCollections = (
     .filter((entry) => entry.metadata.featured)
     .slice(0, 6);
   if (featured.length > 0) {
-    collections.push({ id: "featured", label: "Featured", entries: featured });
+    collections.push({
+      id: "featured",
+      label: MARKETPLACE_COLLECTION_LABELS.featured,
+      entries: featured,
+    });
   }
 
   const hermes3d = entries.filter((entry) =>
     getPackagedSkillBySkillKey(entry.skill.skillKey),
   );
   if (hermes3d.length > 0) {
-    collections.push({ id: "hermes3d", label: "Hermes3D", entries: hermes3d });
+    collections.push({
+      id: "hermes3d",
+      label: MARKETPLACE_COLLECTION_LABELS.hermes3d,
+      entries: hermes3d,
+    });
   }
 
   const installed = entries.filter(
@@ -278,7 +355,7 @@ export const buildSkillMarketplaceCollections = (
   if (installed.length > 0) {
     collections.push({
       id: "installed",
-      label: "Installed",
+      label: MARKETPLACE_COLLECTION_LABELS.installed,
       entries: installed,
     });
   }
@@ -289,7 +366,7 @@ export const buildSkillMarketplaceCollections = (
   if (setupRequired.length > 0) {
     collections.push({
       id: "setup-required",
-      label: "Needs setup",
+      label: MARKETPLACE_COLLECTION_LABELS["setup-required"],
       entries: setupRequired,
     });
   }
@@ -305,7 +382,7 @@ export const buildSkillMarketplaceCollections = (
         : "installed";
     collections.push({
       id: groupId,
-      label: group.label,
+      label: MARKETPLACE_COLLECTION_LABELS[groupId],
       entries: groupEntries,
     });
   }

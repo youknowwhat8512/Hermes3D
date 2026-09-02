@@ -12,6 +12,11 @@ import {
   listPackagedSkills,
 } from "@/lib/skills/catalog";
 import { installPackagedSkillViaGatewayAgent } from "@/lib/skills/install-gateway";
+import {
+  derivePackagedInstallSupport,
+  resolveGatewayMethodList,
+  type PackagedInstallSupport,
+} from "@/lib/skills/packagedInstallSupport";
 import { resolvePreferredInstallOption } from "@/lib/skills/presentation";
 import { removeSkillFromGateway } from "@/lib/skills/remove";
 import {
@@ -58,9 +63,19 @@ export const useOfficeSkillsMarketplace = ({
   const [error, setError] = useState<string | null>(null);
   const [busySkillKey, setBusySkillKey] = useState<string | null>(null);
   const [message, setMessage] = useState<MarketplaceMessage | null>(null);
+  const [gatewayMethods, setGatewayMethods] = useState<string[] | null>(null);
   const packagedSkillsByKey = useMemo(
     () => new Map(listPackagedSkills().map((skill) => [skill.skillKey, skill])),
     []
+  );
+
+  const packagedInstallSupport: PackagedInstallSupport = useMemo(
+    () =>
+      derivePackagedInstallSupport({
+        report: skillsReport,
+        methods: gatewayMethods,
+      }),
+    [gatewayMethods, skillsReport]
   );
 
   const selectedAgent = useMemo(
@@ -93,6 +108,7 @@ export const useOfficeSkillsMarketplace = ({
       if (!enabled || !resolvedAgentId || status !== "connected") {
         setSkillsReport(null);
         setSkillsAllowlist(undefined);
+        setGatewayMethods(null);
         setLoading(false);
         return;
       }
@@ -114,6 +130,7 @@ export const useOfficeSkillsMarketplace = ({
         }
         setSkillsReport(report);
         setSkillsAllowlist(allowlist);
+        setGatewayMethods(resolveGatewayMethodList(client.getLastHello()));
       } catch (err) {
         if (requestId !== requestIdRef.current) {
           return;
@@ -121,9 +138,10 @@ export const useOfficeSkillsMarketplace = ({
         const nextMessage =
           err instanceof Error
             ? err.message
-            : "Failed to load skills marketplace data.";
+            : "스킬 마켓플레이스 정보를 불러오지 못했습니다.";
         setSkillsReport(null);
         setSkillsAllowlist(undefined);
+        setGatewayMethods(null);
         setError(nextMessage);
         if (!isGatewayDisconnectLikeError(err)) {
           console.error(nextMessage);
@@ -142,6 +160,7 @@ export const useOfficeSkillsMarketplace = ({
       requestIdRef.current += 1;
       setSkillsReport(null);
       setSkillsAllowlist(undefined);
+      setGatewayMethods(null);
       setLoading(false);
       return;
     }
@@ -168,14 +187,14 @@ export const useOfficeSkillsMarketplace = ({
       if (!enabled) {
         setMessage({
           kind: "error",
-          text: "This runtime does not expose skill management.",
+          text: "이 런타임은 스킬 관리 기능을 제공하지 않습니다.",
         });
         return;
       }
       if (!agentId || !report) {
         setMessage({
           kind: "error",
-          text: "Select an agent before managing marketplace skills.",
+          text: "마켓플레이스 스킬을 관리하려면 먼저 에이전트를 선택하세요.",
         });
         return;
       }
@@ -195,7 +214,7 @@ export const useOfficeSkillsMarketplace = ({
         const nextMessage =
           err instanceof Error
             ? err.message
-            : "Failed to update the skill.";
+            : "스킬을 업데이트하지 못했습니다.";
         setError(nextMessage);
         setMessage({
           kind: "error",
@@ -223,8 +242,8 @@ export const useOfficeSkillsMarketplace = ({
       await runSkillMutation({
         skillKey: entry?.skillKey ?? skillName,
         successMessage: enabled
-          ? `Enabled ${skillName.trim()} for ${selectedAgent?.name ?? "the selected agent"}.`
-          : `Removed ${skillName.trim()} from ${selectedAgent?.name ?? "the selected agent"}.`,
+          ? `${selectedAgent?.name ?? "선택한 에이전트"}에서 ${skillName.trim()} 스킬을 켰습니다.`
+          : `${selectedAgent?.name ?? "선택한 에이전트"}에서 ${skillName.trim()} 스킬을 껐습니다.`,
         run: async (agentId, report) => {
           await setAgentSkillEnabled({
             client,
@@ -245,13 +264,13 @@ export const useOfficeSkillsMarketplace = ({
       if (!installOption) {
         setMessage({
           kind: "error",
-          text: `No guided install is available for ${skill.name.trim()}.`,
+          text: `${skill.name.trim()} 스킬에는 가이드 설치가 제공되지 않습니다.`,
         });
         return;
       }
       await runSkillMutation({
         skillKey: skill.skillKey,
-        successMessage: `Installed dependencies for ${skill.name.trim()}.`,
+        successMessage: `${skill.name.trim()} 스킬의 의존성을 설치했습니다.`,
         run: async () => {
           await installSkill(client, {
             name: skill.name,
@@ -270,14 +289,24 @@ export const useOfficeSkillsMarketplace = ({
       if (!packagedSkill) {
         setMessage({
           kind: "error",
-          text: `No packaged marketplace skill was found for ${skillKey.trim() || "that entry"}.`,
+          text: `${skillKey.trim() || "해당 항목"}에 해당하는 패키지 스킬을 찾지 못했습니다.`,
+        });
+        return;
+      }
+
+      if (!packagedInstallSupport.supported) {
+        setMessage({
+          kind: "error",
+          text:
+            packagedInstallSupport.reason ??
+            "이 게이트웨이는 패키지 스킬 설치를 지원하지 않습니다.",
         });
         return;
       }
 
       await runSkillMutation({
         skillKey: packagedSkill.skillKey,
-        successMessage: `Successfully installed ${packagedSkill.name.trim()} in the selected workspace. Enable it for the agent from the HERMES3D tab.`,
+        successMessage: `${packagedSkill.name.trim()} 스킬을 선택한 워크스페이스에 설치했습니다. HERMES3D 탭에서 에이전트용으로 켜 주세요.`,
         run: async (_agentId, report) => {
           await installPackagedSkillViaGatewayAgent({
             client,
@@ -293,7 +322,7 @@ export const useOfficeSkillsMarketplace = ({
         },
       });
     },
-    [client, runSkillMutation, selectedAgent]
+    [client, packagedInstallSupport, runSkillMutation, selectedAgent]
   );
 
   const handleInstallPackagedSkillAndEnable = useCallback(
@@ -306,7 +335,7 @@ export const useOfficeSkillsMarketplace = ({
       if (!packagedSkill) {
         setMessage({
           kind: "error",
-          text: `No packaged marketplace skill was found for ${params.skillKey.trim() || "that entry"}.`,
+          text: `${params.skillKey.trim() || "해당 항목"}에 해당하는 패키지 스킬을 찾지 못했습니다.`,
         });
         return;
       }
@@ -315,7 +344,7 @@ export const useOfficeSkillsMarketplace = ({
       if (!targetAgentId) {
         setMessage({
           kind: "error",
-          text: "Select an agent before installing marketplace skills.",
+          text: "마켓플레이스 스킬을 설치하려면 먼저 에이전트를 선택하세요.",
         });
         return;
       }
@@ -328,12 +357,21 @@ export const useOfficeSkillsMarketplace = ({
       try {
         params.onProgress?.({
           percent: 12,
-          message: "Preparing the workspace skill install.",
+          message: "워크스페이스 스킬 설치를 준비하는 중입니다.",
         });
         const initialReport = await loadAgentSkillStatus(client, targetAgentId);
+        const support = derivePackagedInstallSupport({
+          report: initialReport,
+          methods: resolveGatewayMethodList(client.getLastHello()),
+        });
+        if (!support.supported) {
+          throw new Error(
+            support.reason ?? "이 게이트웨이는 패키지 스킬 설치를 지원하지 않습니다."
+          );
+        }
         params.onProgress?.({
           percent: 38,
-          message: "Installing task-manager into the workspace.",
+          message: `${packagedSkill.name.trim()} 스킬을 워크스페이스에 설치하는 중입니다.`,
         });
         await installPackagedSkillViaGatewayAgent({
           client,
@@ -349,12 +387,12 @@ export const useOfficeSkillsMarketplace = ({
         });
         params.onProgress?.({
           percent: 62,
-          message: "Enabling task-manager for this gateway.",
+          message: `${packagedSkill.name.trim()} 스킬을 게이트웨이에서 켜는 중입니다.`,
         });
         await updateSkill(client, { skillKey: packagedSkill.skillKey, enabled: true });
         params.onProgress?.({
           percent: 78,
-          message: "Enabling task-manager for the main agent.",
+          message: `${packagedSkill.name.trim()} 스킬을 메인 에이전트에서 켜는 중입니다.`,
         });
         const refreshedReport = await loadAgentSkillStatus(client, targetAgentId);
         await setAgentSkillEnabled({
@@ -366,24 +404,24 @@ export const useOfficeSkillsMarketplace = ({
         });
         params.onProgress?.({
           percent: 92,
-          message: "Refreshing skill state in Hermes3D.",
+          message: "Hermes3D에서 스킬 상태를 새로고침하는 중입니다.",
         });
         await loadMarketplace(targetAgentId);
         params.onProgress?.({
           percent: 100,
-          message: "Task-manager installed and enabled.",
+          message: `${packagedSkill.name.trim()} 스킬 설치와 활성화를 마쳤습니다.`,
         });
         const agentName =
-          agents.find((agent) => agent.agentId === targetAgentId)?.name ?? "the main agent";
+          agents.find((agent) => agent.agentId === targetAgentId)?.name ?? "메인 에이전트";
         setMessage({
           kind: "success",
-          text: `Installed and enabled ${packagedSkill.name.trim()} for ${agentName}.`,
+          text: `${agentName}에서 ${packagedSkill.name.trim()} 스킬을 설치하고 켰습니다.`,
         });
       } catch (err) {
         const nextMessage =
           err instanceof Error
             ? err.message
-            : "Failed to install and enable the skill.";
+            : "스킬 설치와 활성화에 실패했습니다.";
         setError(nextMessage);
         setMessage({
           kind: "error",
@@ -415,8 +453,8 @@ export const useOfficeSkillsMarketplace = ({
       await runSkillMutation({
         skillKey,
         successMessage: enabled
-          ? "Skill enabled for this gateway."
-          : "Skill disabled for this gateway.",
+          ? "이 게이트웨이에서 스킬을 켰습니다."
+          : "이 게이트웨이에서 스킬을 껐습니다.",
         run: async () => {
           await updateSkill(client, { skillKey, enabled });
         },
@@ -429,7 +467,7 @@ export const useOfficeSkillsMarketplace = ({
     async (skill: SkillStatusEntry) => {
       await runSkillMutation({
         skillKey: skill.skillKey,
-        successMessage: `${skill.name.trim()} removed from gateway files.`,
+        successMessage: `게이트웨이 파일에서 ${skill.name.trim()} 스킬을 삭제했습니다.`,
         run: async (_agentId, report) => {
           await removeSkillFromGateway({
             client,
@@ -456,6 +494,7 @@ export const useOfficeSkillsMarketplace = ({
     marketplaceSkills,
     packagedSkillsByKey,
     skillsAllowlist,
+    packagedInstallSupport,
     loading,
     error,
     busySkillKey,

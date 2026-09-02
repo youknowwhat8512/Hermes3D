@@ -24,6 +24,10 @@ type AgentsListResult = {
     id: string;
     name?: string;
     role?: string;
+    /** The profile's configured model pin, reported by hermes-agent. */
+    model?: string;
+    /** The provider serving that pin — a model id alone is ambiguous. */
+    provider?: string;
     identity?: {
       name?: string;
       theme?: string;
@@ -233,10 +237,17 @@ export const deriveHydrateAgentFleetResult = (
     const modelProvider =
       typeof mainSession?.modelProvider === "string" ? mainSession.modelProvider.trim() : "";
     const modelId = typeof mainSession?.model === "string" ? mainSession.model.trim() : "";
+    // The agent's own pin is the fallback when its session row carries no
+    // model — a backend can list the fleet without exposing per-agent
+    // sessions, and a desk with no model shows an empty dropdown.
+    const agentProvider = typeof agent.provider === "string" ? agent.provider.trim() : "";
+    const agentModelId = typeof agent.model === "string" ? agent.model.trim() : "";
     const model =
       modelProvider && modelId
         ? `${modelProvider}/${modelId}`
-        : resolveDefaultModelForAgent(agent.id, input.configSnapshot);
+        : agentProvider && agentModelId
+          ? `${agentProvider}/${agentModelId}`
+          : resolveDefaultModelForAgent(agent.id, input.configSnapshot);
     const thinkingLevel =
       typeof mainSession?.thinkingLevel === "string" ? mainSession.thinkingLevel : null;
     const sessionExecHost = normalizeExecHost(mainSession?.execHost);

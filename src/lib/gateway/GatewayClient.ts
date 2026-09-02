@@ -132,6 +132,7 @@ export const resolveInitialGatewayAutoConnectDelayMs = (
 ): number => {
   switch (adapterType) {
     case "hermes":
+    case "hermes-agent":
     case "demo":
       return INITIAL_AUTO_CONNECT_DELAY_MS;
     default:
@@ -145,6 +146,7 @@ export const resolveInitialGatewayConnectAttemptCount = (
 ): number => {
   switch (adapterType) {
     case "hermes":
+    case "hermes-agent":
     case "demo":
       return 2;
     default:
@@ -374,9 +376,11 @@ export class GatewayClient {
     }
 
     this.manualDisconnect = true;
-    this.client.stop();
+    const activeClient = this.client;
     this.client = null;
+    this.rejectConnect?.(new Error("Gateway connection cancelled."));
     this.clearConnectPromise();
+    activeClient.stop();
     this.updateStatus("disconnected");
     console.info("Gateway disconnected.");
   }
@@ -463,6 +467,19 @@ export type GatewaySessionsPatchResult = {
   resolved?: {
     modelProvider?: string;
     model?: string;
+    /**
+     * Where the model pick landed. `"profile"` means the gateway persisted it
+     * as the profile's default (`model.default` / `model.provider`), so it
+     * outlives this session — new sessions and other clients pick it up too.
+     */
+    scope?: "profile" | "session";
+    /** The profile whose default was rewritten, when `scope` is `"profile"`. */
+    profile?: string;
+    /**
+     * The live session could not swap mid-turn; the gateway stashed the pick
+     * and applies it at the next turn instead.
+     */
+    pendingTurn?: boolean;
   };
 };
 
@@ -637,6 +654,8 @@ const isAuthError = (errorMessage: string | null): boolean => {
     lower.includes("auth") ||
     lower.includes("unauthorized") ||
     lower.includes("forbidden") ||
+    lower.includes("permission denied") ||
+    lower.includes("pairing required") ||
     lower.includes("invalid token") ||
     lower.includes("token required") ||
     (lower.includes("token") && lower.includes("not configured")) ||
@@ -650,18 +669,44 @@ const MAX_RETRY_DELAY_MS = 30_000;
 
 const NON_RETRYABLE_CONNECT_ERROR_CODES = new Set([
   "studio.gateway_url_missing",
+  "studio.gateway_url_blocked",
   "studio.gateway_token_missing",
   "studio.gateway_url_invalid",
   "studio.settings_load_failed",
-  "studio.upstream_error",
-  "studio.upstream_timeout",
   "studio.upstream_rejected",
+  "invalid_request",
+  "unauthorized",
+  "forbidden",
+]);
+
+const NON_RETRYABLE_CONNECT_DETAIL_CODES = new Set([
+  "CONTROL_UI_ORIGIN_NOT_ALLOWED",
+  "CONTROL_UI_DEVICE_IDENTITY_REQUIRED",
+  "UPSTREAM_NOT_ALLOWED",
 ]);
 
 const isNonRetryableConnectErrorCode = (code: string | null): boolean => {
   const normalized = code?.trim().toLowerCase() ?? "";
   if (!normalized) return false;
   return NON_RETRYABLE_CONNECT_ERROR_CODES.has(normalized);
+};
+
+export const isRetryableGatewayConnectError = (error: unknown): boolean => {
+  const code = error instanceof GatewayResponseError ? error.code : null;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (isNonRetryableConnectErrorCode(code)) return false;
+  if (error instanceof GatewayResponseError && error.details && typeof error.details === "object") {
+    const detailCode = (error.details as { code?: unknown }).code;
+    if (
+      typeof detailCode === "string" &&
+      NON_RETRYABLE_CONNECT_DETAIL_CODES.has(detailCode.trim().toUpperCase())
+    ) {
+      return false;
+    }
+  }
+  if (isAuthError(message)) return false;
+  if (error instanceof GatewayResponseError && error.retryable === false) return false;
+  return true;
 };
 
 /** WebSocket close code 1008 = policy violation (rate limit). */
@@ -681,12 +726,11 @@ export const resolveGatewayAutoRetryDelayMs = (params: {
 }): number | null => {
   if (params.status !== "disconnected") return null;
   if (!params.didAutoConnect) return null;
-  if (!params.hasConnectedOnce) return null;
   if (params.wasManualDisconnect) return null;
   if (!params.gatewayUrl.trim()) return null;
   if (params.attempt >= MAX_AUTO_RETRY_ATTEMPTS) return null;
   if (isNonRetryableConnectErrorCode(params.connectErrorCode)) return null;
-  if (params.connectErrorCode === null && isAuthError(params.errorMessage)) return null;
+  if (isAuthError(params.errorMessage)) return null;
 
   const baseDelay =
     params.lastDisconnectCode === WS_CLOSE_POLICY_VIOLATION
@@ -715,6 +759,11 @@ export const useGatewayConnection = (
   const retryAttemptRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoConnectTimerRef = useRef<number | null>(null);
+  const interAttemptDelayRef = useRef<{
+    timer: number;
+    settle: (elapsed: boolean) => void;
+  } | null>(null);
+  const connectGenerationRef = useRef(0);
   const wasManualDisconnectRef = useRef(false);
 
   const [gatewayUrl, setGatewayUrl] = useState(DEFAULT_UPSTREAM_GATEWAY_URL);
@@ -852,8 +901,18 @@ export const useGatewayConnection = (
     });
   }, [client]);
 
+  const cancelInterAttemptDelay = useCallback(() => {
+    const pending = interAttemptDelayRef.current;
+    if (!pending) return;
+    interAttemptDelayRef.current = null;
+    clearTimeout(pending.timer);
+    pending.settle(false);
+  }, []);
+
   useEffect(() => {
     return () => {
+      connectGenerationRef.current += 1;
+      cancelInterAttemptDelay();
       if (autoConnectTimerRef.current) {
         clearTimeout(autoConnectTimerRef.current);
         autoConnectTimerRef.current = null;
@@ -864,9 +923,13 @@ export const useGatewayConnection = (
       }
       client.disconnect();
     };
-  }, [client]);
+  }, [cancelInterAttemptDelay, client]);
 
   const connect = useCallback(async () => {
+    cancelInterAttemptDelay();
+    const connectGeneration = connectGenerationRef.current + 1;
+    connectGenerationRef.current = connectGeneration;
+    const isCurrentConnect = () => connectGenerationRef.current === connectGeneration;
     if (autoConnectTimerRef.current) {
       clearTimeout(autoConnectTimerRef.current);
       autoConnectTimerRef.current = null;
@@ -892,7 +955,9 @@ export const useGatewayConnection = (
       setStatus("connecting");
       try {
         await settingsCoordinator.flushPending();
+        if (!isCurrentConnect()) return;
         await probeCustomRuntime(gatewayUrl);
+        if (!isCurrentConnect()) return;
         setDetectedAdapterType(selectedAdapterType);
         setStatus("connected");
         setConnectErrorCode(null);
@@ -901,6 +966,7 @@ export const useGatewayConnection = (
           gatewayUrl,
         });
       } catch (err) {
+        if (!isCurrentConnect()) return;
         setStatus("disconnected");
         setDetectedAdapterType(null);
         setConnectErrorCode("studio.custom_runtime_probe_failed");
@@ -914,6 +980,7 @@ export const useGatewayConnection = (
     }
     try {
       await settingsCoordinator.flushPending();
+      if (!isCurrentConnect()) return;
       const maxAttempts = resolveInitialGatewayConnectAttemptCount(
         selectedAdapterType,
         hasConnectedOnceRef.current
@@ -928,9 +995,14 @@ export const useGatewayConnection = (
             clientName: resolveGatewayClientName(),
             disableDeviceAuth: selectedAdapterType !== "hermes",
           });
+          if (!isCurrentConnect()) {
+            client.disconnect();
+            return;
+          }
           lastError = null;
           break;
         } catch (err) {
+          if (!isCurrentConnect()) return;
           lastError = err;
           gatewayDebugLog("connect:attempt-failed", {
             selectedAdapterType,
@@ -938,13 +1010,20 @@ export const useGatewayConnection = (
             maxAttempts,
             message: err instanceof Error ? err.message : String(err),
           });
-          if (attempt + 1 >= maxAttempts) {
+          if (attempt + 1 >= maxAttempts || !isRetryableGatewayConnectError(err)) {
             throw err;
           }
           client.disconnect();
-          await new Promise<void>((resolve) => {
-            window.setTimeout(resolve, INITIAL_CONNECT_RETRY_DELAY_MS);
+          const delayElapsed = await new Promise<boolean>((resolve) => {
+            const timer = window.setTimeout(() => {
+              if (interAttemptDelayRef.current?.timer === timer) {
+                interAttemptDelayRef.current = null;
+              }
+              resolve(true);
+            }, INITIAL_CONNECT_RETRY_DELAY_MS);
+            interAttemptDelayRef.current = { timer, settle: resolve };
           });
+          if (!delayElapsed || !isCurrentConnect()) return;
         }
       }
       if (lastError) {
@@ -954,6 +1033,10 @@ export const useGatewayConnection = (
         client,
         upstreamGatewayUrl: gatewayUrl,
       });
+      if (!isCurrentConnect()) {
+        client.disconnect();
+        return;
+      }
       const hello = client.getLastHello();
       const nextDetectedAdapterType =
         hello?.adapterType === "demo" ||
@@ -979,6 +1062,7 @@ export const useGatewayConnection = (
         detectedAdapterType: nextDetectedAdapterType,
       });
     } catch (err) {
+      if (!isCurrentConnect()) return;
       setConnectErrorCode(err instanceof GatewayResponseError ? err.code : null);
       setError(formatGatewayError(err));
       gatewayDebugLog("connect:failed", {
@@ -987,7 +1071,7 @@ export const useGatewayConnection = (
         message: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [client, gatewayUrl, selectedAdapterType, settingsCoordinator, token]);
+  }, [cancelInterAttemptDelay, client, gatewayUrl, selectedAdapterType, settingsCoordinator, token]);
 
   useEffect(() => {
     if (didAutoConnect.current) return;
@@ -1169,6 +1253,16 @@ export const useGatewayConnection = (
 
   const disconnect = useCallback(() => {
     gatewayDebugLog("disconnect", { selectedAdapterType, status });
+    connectGenerationRef.current += 1;
+    cancelInterAttemptDelay();
+    if (autoConnectTimerRef.current) {
+      clearTimeout(autoConnectTimerRef.current);
+      autoConnectTimerRef.current = null;
+    }
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     setError(null);
     setConnectErrorCode(null);
     wasManualDisconnectRef.current = true;
@@ -1192,7 +1286,7 @@ export const useGatewayConnection = (
     }
     client.disconnect();
     clearGatewayBrowserSessionStorage();
-  }, [client, selectedAdapterType, status]);
+  }, [cancelInterAttemptDelay, client, selectedAdapterType, status]);
 
   const clearError = useCallback(() => {
     setError(null);

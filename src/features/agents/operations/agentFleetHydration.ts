@@ -27,6 +27,10 @@ type AgentsListResult = {
   agents: Array<{
     id: string;
     name?: string;
+    /** The profile's configured model pin, reported by hermes-agent. */
+    model?: string;
+    /** The provider serving that pin — a model id alone is ambiguous. */
+    provider?: string;
     identity?: {
       name?: string;
       theme?: string;
@@ -87,10 +91,17 @@ const resolveAgentsListFromHelloSnapshot = (snapshot: unknown): AgentsListResult
     const id = typeof entry.agentId === "string" ? entry.agentId.trim() : "";
     if (!id) return [];
     const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    // The hello snapshot is the only roster available when agents.list is
+    // unreachable, so it must carry the model pin too or every desk falls
+    // back to an empty model.
+    const model = typeof entry.model === "string" ? entry.model.trim() : "";
+    const provider = typeof entry.provider === "string" ? entry.provider.trim() : "";
     return [
       {
         id,
         ...(name ? { name } : {}),
+        ...(model ? { model } : {}),
+        ...(provider ? { provider } : {}),
       },
     ];
   });

@@ -67,7 +67,10 @@ const setupAndImportHook = async (gatewayUrl: string | null) => {
       }
     }
 
-    return { GatewayBrowserClient };
+    return {
+      GatewayBrowserClient,
+      clearGatewayBrowserSessionStorage: () => {},
+    };
   });
 
   const mod = await import("@/lib/gateway/GatewayClient");
@@ -80,18 +83,20 @@ const setupAndImportHook = async (gatewayUrl: string | null) => {
     }) => {
       gatewayUrl: string;
       token: string;
-      selectedAdapterType: "hermes" | "hermes" | "demo" | "custom";
-      detectedAdapterType: "hermes" | "hermes" | "demo" | "custom" | null;
-      activeAdapterType: "hermes" | "hermes" | "demo" | "custom";
+      selectedAdapterType: "hermes" | "hermes-agent" | "demo" | "custom";
+      detectedAdapterType: "hermes" | "hermes-agent" | "demo" | "custom" | null;
+      activeAdapterType: "hermes" | "hermes-agent" | "demo" | "custom";
       localGatewayDefaults: {
         url: string;
         token: string;
-        adapterType: "hermes" | "hermes" | "demo" | "custom";
+        adapterType: "hermes" | "hermes-agent" | "demo" | "custom";
       } | null;
       shouldPromptForConnect: boolean;
+      connectPromptReady: boolean;
       useLocalGatewayDefaults: () => void;
-      setSelectedAdapterType: (value: "hermes" | "hermes" | "demo" | "custom") => void;
+      setSelectedAdapterType: (value: "hermes" | "hermes-agent" | "demo" | "custom") => void;
       connect: () => Promise<void>;
+      disconnect: () => void;
     },
     captured,
   };
@@ -338,19 +343,68 @@ describe("useGatewayConnection", () => {
     expect(captured.url).toBeNull();
   });
 
-  it("uses_a_small_initial_auto_connect_delay_for_hermes_and_demo_only", async () => {
+  it("manual_disconnect_cancels_a_pending_initial_auto_connect", async () => {
+    const { useGatewayConnection, captured } = await setupAndImportHook(null);
+    const coordinator = {
+      loadSettings: async () => null,
+      loadSettingsEnvelope: async () => ({
+        settings: {
+          version: 1,
+          gateway: {
+            url: "ws://127.0.0.1:9137",
+            token: "",
+            adapterType: "hermes-agent",
+            lastKnownGood: {
+              url: "ws://127.0.0.1:9137",
+              adapterType: "hermes-agent",
+            },
+          },
+          focused: {}, avatars: {}, analytics: {}, voiceReplies: {}, office: {},
+          deskAssignments: {}, standup: {}, taskBoard: {},
+        },
+        localGatewayDefaults: null,
+      }),
+      schedulePatch: () => {},
+      flushPending: async () => {},
+    };
+
+    const Probe = () => {
+      const state = useGatewayConnection(coordinator);
+      return createElement(
+        "button",
+        {
+          "data-testid": "disconnect",
+          disabled: !state.connectPromptReady,
+          onClick: state.disconnect,
+        },
+        "disconnect",
+      );
+    };
+
+    render(createElement(Probe));
+    await waitFor(() => expect(screen.getByTestId("disconnect")).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId("disconnect"));
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+    expect(captured.url).toBeNull();
+  });
+
+  it("uses_the_same_initial_auto_connect_delay_for_all_auto_managed_adapters", async () => {
     const mod = await import("@/lib/gateway/GatewayClient");
     expect(mod.resolveInitialGatewayAutoConnectDelayMs("custom")).toBe(0);
     expect(mod.resolveInitialGatewayAutoConnectDelayMs("hermes")).toBe(900);
+    expect(mod.resolveInitialGatewayAutoConnectDelayMs("hermes-agent")).toBe(900);
     expect(mod.resolveInitialGatewayAutoConnectDelayMs("demo")).toBe(900);
   });
 
-  it("retries_only_the_first_connect_for_hermes_and_demo", async () => {
+  it("gives_hermes_agent_the_same_initial_connect_retry_as_hermes_and_demo", async () => {
     const mod = await import("@/lib/gateway/GatewayClient");
     expect(mod.resolveInitialGatewayConnectAttemptCount("custom", false)).toBe(1);
     expect(mod.resolveInitialGatewayConnectAttemptCount("hermes", false)).toBe(2);
+    expect(mod.resolveInitialGatewayConnectAttemptCount("hermes-agent", false)).toBe(2);
     expect(mod.resolveInitialGatewayConnectAttemptCount("demo", false)).toBe(2);
     expect(mod.resolveInitialGatewayConnectAttemptCount("hermes", true)).toBe(2);
+    expect(mod.resolveInitialGatewayConnectAttemptCount("hermes-agent", true)).toBe(2);
     expect(mod.resolveInitialGatewayConnectAttemptCount("demo", true)).toBe(2);
     expect(mod.resolveInitialGatewayConnectAttemptCount("custom", true)).toBe(1);
   });

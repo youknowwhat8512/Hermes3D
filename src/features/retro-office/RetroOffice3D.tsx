@@ -49,6 +49,11 @@ import type { MockPhoneCallScenario } from "@/lib/office/call/types";
 import { buildMockTextMessageScenario } from "@/lib/office/text/mock";
 import type { MockTextMessageScenario } from "@/lib/office/text/types";
 import type { OfficeDeskMonitor } from "@/lib/office/deskMonitor";
+import {
+  resolveOfficeAgentDotClass,
+  resolveOfficeAgentLabel,
+  resolveOfficeAgentPillClass,
+} from "@/lib/office/statusColors";
 import type { OfficeAnimationState } from "@/lib/office/eventTriggers";
 import type { StandupMeeting } from "@/lib/office/standup/types";
 import type { SkillStatusEntry } from "@/lib/skills/types";
@@ -102,6 +107,7 @@ import {
   REMOTE_OFFICE_ZONE,
   REMOTE_ROAM_POINTS,
 } from "@/features/retro-office/core/district";
+import { resolveDeskIndexByAgentId } from "@/features/retro-office/core/deskSeating";
 import {
   buildJanitorActorsForCue,
   pruneExpiredJanitorActors,
@@ -3298,15 +3304,15 @@ export function RetroOffice3D({
     [furniture],
   );
   const deskLocations = useMemo(() => getDeskLocations(furniture), [furniture]);
-  const assignedDeskIndexByAgentId = useMemo(() => {
-    const next: Record<string, number> = {};
-    deskItems.forEach((item, index) => {
-      const agentId = deskAssignmentByDeskUid[item._uid];
-      if (!agentId) return;
-      next[agentId] = index;
-    });
-    return next;
-  }, [deskAssignmentByDeskUid, deskItems]);
+  const assignedDeskIndexByAgentId = useMemo(
+    () =>
+      resolveDeskIndexByAgentId({
+        agents,
+        deskUids: deskItems.map((item) => item._uid),
+        assignmentByDeskUid: deskAssignmentByDeskUid,
+      }),
+    [agents, deskAssignmentByDeskUid, deskItems],
+  );
   const janitorCleaningStops = useMemo(
     () => getJanitorCleaningStops(furniture),
     [furniture],
@@ -6537,11 +6543,10 @@ export function RetroOffice3D({
                 const working = status?.working ?? agent.status === "working";
                 const isRemoteAgent = isRemoteOfficeAgentId(agent.id);
                 const mood = moodByAgentId[agent.id];
-                const dotClass = isError
-                  ? "bg-red-400"
-                  : working
-                    ? "bg-green-400"
-                    : "bg-yellow-400";
+                const dotClass = resolveOfficeAgentDotClass({
+                  isError,
+                  isWorking: working,
+                });
                 return (
                   <button
                     key={agent.id}
@@ -6630,11 +6635,10 @@ export function RetroOffice3D({
                   const isError = status?.isError ?? agent.status === "error";
                   const working = status?.working ?? agent.status === "working";
                   const isRemoteAgent = isRemoteOfficeAgentId(agent.id);
-                  const dotClass = isError
-                    ? "bg-red-400"
-                    : working
-                      ? "bg-green-400"
-                      : "bg-yellow-400";
+                  const dotClass = resolveOfficeAgentDotClass({
+                    isError,
+                    isWorking: working,
+                  });
                   const runCount = runCountByAgentId[agent.id] ?? 0;
                   return (
                     <div
@@ -6666,7 +6670,10 @@ export function RetroOffice3D({
                             {agent.name}
                           </div>
                           <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-500/70">
-                            {isError ? "error" : working ? "working" : "idle"}
+                            {resolveOfficeAgentLabel({
+                              isError,
+                              isWorking: working,
+                            })}
                             {isRemoteAgent ? " · remote" : ""}
                             {runCount > 0 ? ` · ${runCount} runs` : ""}
                           </div>
@@ -6758,13 +6765,9 @@ export function RetroOffice3D({
                     style={{ backgroundColor: hoveredAgent.color }}
                   />
                   <div
-                    className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-[#120e08] ${
-                      isError
-                        ? "bg-red-400"
-                        : working
-                          ? "bg-green-400"
-                          : "bg-yellow-400"
-                    }`}
+                    className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-[#120e08] ${resolveOfficeAgentDotClass(
+                      { isError, isWorking: working },
+                    )}`}
                   />
                 </div>
                 <div>
@@ -6788,15 +6791,11 @@ export function RetroOffice3D({
                   })()}
                 </div>
                 <div
-                  className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ml-1 ${
-                    isError
-                      ? "bg-red-900/40 text-red-400 ring-1 ring-red-800/40"
-                      : working
-                        ? "bg-green-900/40 text-green-400 ring-1 ring-green-800/40"
-                        : "bg-yellow-900/30 text-yellow-500 ring-1 ring-yellow-800/30"
-                  }`}
+                  className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ml-1 ${resolveOfficeAgentPillClass(
+                    { isError, isWorking: working },
+                  )}`}
                 >
-                  {isError ? "error" : working ? "working" : "idle"}
+                  {resolveOfficeAgentLabel({ isError, isWorking: working })}
                 </div>
               </div>
             </div>

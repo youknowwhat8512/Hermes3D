@@ -113,6 +113,40 @@ const toHermes3dKanbanTasks = (board) => {
 };
 
 /**
+ * The `GET /board` response -> `assignee -> running task ids`.
+ *
+ * Deliberately reads only `status`, `assignee`, and `id`: this feed exists to
+ * colour a desk, so nothing that could carry a title, a body, a token, or a
+ * workspace path is allowed anywhere near it. Only the canonical raw status
+ * `running` counts — the office column mapping folds `review` and `blocked`
+ * in with real work, which would light a desk for a card nobody is executing.
+ */
+const toKanbanRunningByAssignee = (board) => {
+  const grouped = new Map();
+  const seen = new Set();
+  const columns = Array.isArray(board?.columns) ? board.columns : [];
+  for (const column of columns) {
+    const tasks = Array.isArray(column?.tasks) ? column.tasks : [];
+    for (const task of tasks) {
+      if (!task || typeof task !== "object") continue;
+      if (asTrimmed(task.status) !== "running") continue;
+      const assignee = asTrimmed(task.assignee);
+      const taskId = asTrimmed(task.id);
+      if (!assignee || !taskId) continue;
+      // A board that lists the same card twice must not make the tracker
+      // believe two cards are running; the end would then need two polls.
+      const key = `${assignee}\u0000${taskId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const ids = grouped.get(assignee);
+      if (ids) ids.push(taskId);
+      else grouped.set(assignee, [taskId]);
+    }
+  }
+  return grouped;
+};
+
+/**
  * An office task patch -> the kanban `PATCH /tasks/{id}` body.
  *
  * Archiving wins over any simultaneous status change: the office models
@@ -215,6 +249,7 @@ module.exports = {
   KANBAN_TASK_ID_PREFIX,
   toHermes3dKanbanTaskRecord,
   toHermes3dKanbanTasks,
+  toKanbanRunningByAssignee,
   toKanbanPatchBody,
   kanbanOriginFromWsUrl,
   kanbanRequest,

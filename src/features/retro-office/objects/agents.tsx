@@ -13,8 +13,18 @@ import type {
   RenderAgent,
 } from "@/features/retro-office/core/types";
 import { AgentModelProps } from "@/features/retro-office/objects/types";
+import {
+  OFFICE_STATUS_HEX,
+  resolveOfficeAgentHex,
+} from "@/lib/office/statusColors";
 
 const MAX_NAMEPLATE_TEXT_LENGTH = 10;
+/**
+ * Paint on the janitor's floor scrubber. Deliberately not the status amber:
+ * a prop that happens to be orange must not borrow the one colour the office
+ * reserves for "a human is needed here".
+ */
+const JANITOR_EQUIPMENT_ORANGE = "#e08a1e";
 const MAX_SUBTITLE_TEXT_LENGTH = 20;
 const MAX_SPEECH_BUBBLE_TEXT_LENGTH = 180;
 const MAX_SPEECH_BUBBLE_LINES = 4;
@@ -352,26 +362,34 @@ export const AgentModel = memo(function AgentModel({
               : 0;
     }
 
-    const working =
-      agent.state === "sitting" ||
-      isWorkout ||
-      isDancing ||
-      agent.status === "working";
+    // A pose is not a status. Sitting at a desk, doing push-ups, or dancing are
+    // animations the scene plays; only agent.status says whether real work is
+    // in flight. Colour and the pulse ring answer "is this agent busy?", so
+    // they read the status alone — a whole office of seated idle agents lit up
+    // green is exactly how an operator misreads their own office.
+    const isAnimatedPose =
+      agent.state === "sitting" || isWorkout || isDancing;
+    const isActuallyWorking = agent.status === "working";
     const isError = agent.status === "error";
     const isAway = agent.state === "away";
+    // Face and posture keep following the pose, so a seated agent still reads
+    // as concentrating even while its status dot says idle.
+    const isFocusedPose = isAnimatedPose || isActuallyWorking;
 
     if (statusDotMatRef.current) {
       statusDotMatRef.current.color.set(
-        isError ? "#ef4444" : working ? "#22c55e" : "#f59e0b",
+        resolveOfficeAgentHex({ isError, isWorking: isActuallyWorking }),
       );
     }
 
     if (pulseRingRef.current && pulseRingMatRef.current) {
-      if (working || isError) {
+      if (isActuallyWorking || isError) {
         const pulse = (Math.sin(agent.frame * 0.05) + 1) / 2;
         const scale = isError ? 1.25 + pulse * 0.55 : 1.2 + pulse * 0.8;
         pulseRingRef.current.scale.setScalar(scale);
-        pulseRingMatRef.current.color.set(isError ? "#ef4444" : "#22c55e");
+        pulseRingMatRef.current.color.set(
+          isError ? OFFICE_STATUS_HEX.error : OFFICE_STATUS_HEX.working,
+        );
         pulseRingMatRef.current.opacity = isError
           ? 0.7 - pulse * 0.3
           : 0.55 - pulse * 0.45;
@@ -400,23 +418,23 @@ export const AgentModel = memo(function AgentModel({
     const blinkSeed = agentId
       .split("")
       .reduce((sum, char) => sum + char.charCodeAt(0), 0);
-    const blinkCycle = isAway ? 180 : isError ? 120 : working ? 170 : 240;
+    const blinkCycle = isAway ? 180 : isError ? 120 : isFocusedPose ? 170 : 240;
     const blinkWindow = isAway ? 26 : isError ? 18 : 12;
     const blinkPhase = (agent.frame + blinkSeed * 17) % blinkCycle;
-    let eyeOpen = isError ? 0.92 : working ? 0.84 : 1.12;
+    let eyeOpen = isError ? 0.92 : isFocusedPose ? 0.84 : 1.12;
 
     if (blinkPhase < blinkWindow) {
       const midpoint = blinkWindow / 2;
       eyeOpen *= Math.min(1, Math.abs(blinkPhase - midpoint) / midpoint);
     }
-    if (working) eyeOpen = Math.max(0.48, eyeOpen);
+    if (isFocusedPose) eyeOpen = Math.max(0.48, eyeOpen);
     if (isError) eyeOpen = Math.max(0.28, eyeOpen);
     if (isAway) eyeOpen = Math.min(eyeOpen, 0.2);
 
-    const eyeScaleX = isError ? 1.2 : working ? 1.06 : 1.12;
+    const eyeScaleX = isError ? 1.2 : isFocusedPose ? 1.06 : 1.12;
     const eyeScaleY = Math.max(0.05, eyeOpen);
     const eyeOffsetY =
-      (working ? -0.006 : 0) +
+      (isFocusedPose ? -0.006 : 0) +
       (isError ? -0.004 : 0) +
       (agent.state === "walking" ? 0.004 : 0) +
       (isAway ? -0.008 : 0);
@@ -442,7 +460,7 @@ export const AgentModel = memo(function AgentModel({
       } else if (isError) {
         mouthRef.current.scale.set(1.28, 0.16, 1);
         mouthRef.current.position.y = 0.43;
-      } else if (working) {
+      } else if (isFocusedPose) {
         mouthRef.current.scale.set(0.92, 0.14, 1);
         mouthRef.current.position.y = 0.437;
       } else if (agent.state === "walking") {
@@ -456,7 +474,7 @@ export const AgentModel = memo(function AgentModel({
     }
 
     const showSmileCorners =
-      !isAway && !isError && !working && agent.state !== "walking";
+      !isAway && !isError && !isFocusedPose && agent.state !== "walking";
     const showFrownCorners = isError;
     if (leftMouthCornerRef.current && rightMouthCornerRef.current) {
       leftMouthCornerRef.current.visible = showSmileCorners || showFrownCorners;
@@ -490,7 +508,7 @@ export const AgentModel = memo(function AgentModel({
         rightBrowRef.current.rotation.z = -0.42;
         leftBrowRef.current.position.y = 0.516;
         rightBrowRef.current.position.y = 0.516;
-      } else if (working) {
+      } else if (isFocusedPose) {
         leftBrowRef.current.rotation.z = 0.3;
         rightBrowRef.current.rotation.z = -0.3;
       } else {
@@ -505,7 +523,7 @@ export const AgentModel = memo(function AgentModel({
       (!suppressSpeechBubble && isError) ||
       (!isAway &&
         !suppressSpeechBubble &&
-        !working &&
+        !isFocusedPose &&
         !isError &&
         agent.state === "standing" &&
         (agent.frame + blinkSeed * 11) % 320 < 42);
@@ -544,7 +562,7 @@ export const AgentModel = memo(function AgentModel({
 
     if (speechBubbleMatRef.current) {
       speechBubbleMatRef.current.color.set(
-        isError ? "#3a1016" : working ? "#1d2a17" : "#1a2030",
+        isError ? "#3a1016" : isFocusedPose ? "#1d2a17" : "#1a2030",
       );
       speechBubbleMatRef.current.opacity = isError ? 0.97 : 0.92;
     }
@@ -943,7 +961,10 @@ export const AgentModel = memo(function AgentModel({
           </mesh>
           <mesh position={[0.035, -0.17, 0]}>
             <boxGeometry args={[0.085, 0.08, 0.065]} />
-            <meshStandardMaterial color="#f59e0b" roughness={0.46} />
+            <meshStandardMaterial
+              color={JANITOR_EQUIPMENT_ORANGE}
+              roughness={0.46}
+            />
           </mesh>
           <mesh position={[0.06, -0.27, 0.02]} rotation={[-Math.PI / 2, 0, 0]}>
             <cylinderGeometry args={[0.075, 0.075, 0.018, 24]} />
@@ -1160,7 +1181,7 @@ export const AgentModel = memo(function AgentModel({
         <ringGeometry args={[0.13, 0.19, 24]} />
         <meshBasicMaterial
           ref={pulseRingMatRef}
-          color="#22c55e"
+          color={OFFICE_STATUS_HEX.working}
           transparent
           opacity={0.5}
           depthWrite={false}
@@ -1178,7 +1199,10 @@ export const AgentModel = memo(function AgentModel({
           </mesh>
           <mesh position={[0.355, subtitleText ? 0.05 : 0, 0]}>
             <circleGeometry args={[0.052, 14]} />
-            <meshBasicMaterial ref={statusDotMatRef} color="#ef4444" />
+            <meshBasicMaterial
+              ref={statusDotMatRef}
+              color={OFFICE_STATUS_HEX.idle}
+            />
           </mesh>
           <Text
             position={[-0.02, subtitleText ? 0.05 : 0, 0.001]}

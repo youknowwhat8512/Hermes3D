@@ -99,12 +99,12 @@ if ! port_free $APP_PORT; then
   if port_owned_by $APP_PORT "node.*next|next-server|server/index\.js"; then
     warn "Hermes3D dev server already running on :$APP_PORT — reusing."
   else
-    APP_PORT=$(find_free_port $((APP_PORT + 1)))
-    warn "Port 3000 taken by another process → using :$APP_PORT for Hermes3D."
-    log "Starting Hermes3D dev server on :$APP_PORT..."
-    cd "$HERMES3D_DIR"
-    nohup env PORT="$APP_PORT" NEXT_PUBLIC_GATEWAY_URL="$GATEWAY_WS_URL" \
-      npm run dev > "$LOG_DIR/hermes3d-dev.log" 2>&1 &
+    # 3000 is fixed: the launchd agent, the gateway proxy and every bookmark
+    # assume it. Shifting to 3001 used to "succeed" while nothing could reach it.
+    warn "Port $APP_PORT is taken by another process:"
+    lsof -nP -iTCP:"$APP_PORT" -sTCP:LISTEN >&2 || true
+    warn "Stop it, or use the launchd agent: scripts/launchd/install-ja-office-app.sh"
+    exit 1
   fi
 else
   log "Starting Hermes3D dev server on :$APP_PORT..."

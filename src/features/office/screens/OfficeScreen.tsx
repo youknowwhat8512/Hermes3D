@@ -68,6 +68,7 @@ import {
   type RemoteAgentChatMessage,
 } from "@/features/office/components/RemoteAgentChatPanel";
 import { useOfficeFloorRuntimePersistence } from "@/features/office/hooks/useOfficeFloorRuntimePersistence";
+import { applyOfficeModelSelection } from "@/features/office/operations/officeSessionSettings";
 import {
   type RuntimeAgentMessageMode,
 } from "@/lib/runtime/agentMessaging";
@@ -5334,13 +5335,17 @@ export function OfficeScreen({
                   onNewSession={() =>
                     chatController.handleNewSession(focusedChatAgent.agentId)
                   }
-                  onModelChange={(value) =>
-                    dispatch({
-                      type: "updateAgent",
+                  onModelChange={(value) => {
+                    void applyOfficeModelSelection({
+                      agents: stateRef.current.agents,
+                      dispatch,
+                      client,
                       agentId: focusedChatAgent.agentId,
-                      patch: { model: value ?? undefined },
-                    })
-                  }
+                      sessionKey: focusedChatAgent.sessionKey,
+                      value,
+                      connected: status === "connected",
+                    });
+                  }}
                   onThinkingChange={(value) =>
                     dispatch({
                       type: "updateAgent",

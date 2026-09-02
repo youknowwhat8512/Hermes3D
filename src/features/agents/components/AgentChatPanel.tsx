@@ -867,6 +867,18 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
 });
 
 const noopToggle = () => {};
+
+/**
+ * Picking a model here rewrites the profile's default, not just this chat.
+ *
+ * The control used to read "Choose model" while the switch was session-scoped;
+ * now that the pick persists to the profile's `model.default`/`model.provider`,
+ * the operator has to be told before they click that new sessions and other
+ * clients will come up on it too.
+ */
+const MODEL_SELECT_HINT =
+  "프로필 기본 모델을 변경합니다 · 새 세션과 다른 클라이언트도 이 모델을 사용합니다";
+
 const InlineHoverTooltip = ({
   text,
   children,
@@ -1008,10 +1020,11 @@ const AgentChatComposer = memo(function AgentChatComposer({
     <>
       <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
         <div className="flex min-w-0 items-center gap-2">
-          <InlineHoverTooltip text="Choose model">
+          <InlineHoverTooltip text={MODEL_SELECT_HINT}>
             <select
               className="ui-input ui-control-important h-6 min-w-0 rounded-md border-white/10 px-1.5 text-[10px] font-semibold text-white"
               aria-label="Model"
+              title={MODEL_SELECT_HINT}
               value={modelValue}
               style={{ ...CHAT_SELECT_STYLE, width: `${modelSelectWidthCh}ch` }}
               onChange={(event) => {

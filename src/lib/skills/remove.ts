@@ -2,10 +2,10 @@ import type { GatewayClient } from "@/lib/gateway/GatewayClient";
 import { removeSkillViaGatewayAgent } from "@/lib/skills/remove-gateway";
 import type { SkillRemoveRequest, SkillRemoveResult } from "@/lib/skills/types";
 
-const normalizeRequired = (value: string, field: string): string => {
-  const trimmed = value.trim();
+const normalizeRequired = (value: unknown, field: string): string => {
+  const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) {
-    throw new Error(`${field} is required.`);
+    throw new Error(`${field} 값이 필요합니다.`);
   }
   return trimmed;
 };

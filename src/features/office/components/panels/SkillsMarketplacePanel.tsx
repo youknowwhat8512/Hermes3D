@@ -23,22 +23,31 @@ type MarketplaceFilter = "all" | SkillMarketplaceCollectionId;
 
 const FILTER_LABELS: Record<MarketplaceFilter, string> = {
   hermes3d: "Hermes3D",
-  all: "All",
-  featured: "Featured",
-  installed: "Installed",
-  "setup-required": "Needs setup",
-  "built-in": "Built-in",
-  workspace: "Workspace",
-  extra: "Community",
-  other: "Other",
+  all: "전체",
+  featured: "추천",
+  installed: "설치됨",
+  "setup-required": "설정 필요",
+  "built-in": "기본 제공",
+  workspace: "워크스페이스",
+  extra: "커뮤니티",
+  other: "기타",
 };
 
 const READINESS_LABELS = {
-  ready: "Ready",
-  "needs-setup": "Needs setup",
-  unavailable: "Unavailable",
-  "disabled-globally": "Disabled globally",
+  ready: "사용 가능",
+  "needs-setup": "설정 필요",
+  unavailable: "사용 불가",
+  "disabled-globally": "게이트웨이 비활성",
 } as const;
+
+const ACCESS_MODE_LABELS: Record<
+  ReturnType<typeof deriveAgentSkillsAccessMode>,
+  string
+> = {
+  all: "모든 스킬 허용",
+  none: "허용된 스킬 없음",
+  selected: "선택한 스킬만",
+};
 
 const READINESS_CLASSES = {
   ready: "border-emerald-500/30 bg-emerald-500/10 text-emerald-100",
@@ -59,7 +68,7 @@ const formatInstalls = (value: number | undefined) => {
   if (installs >= 1000) {
     return `${(installs / 1000).toFixed(1)}k`;
   }
-  return new Intl.NumberFormat("en-US").format(installs);
+  return new Intl.NumberFormat("ko-KR").format(installs);
 };
 
 const buildSearchBlob = (entry: SkillMarketplaceEntry): string => {
@@ -182,10 +191,10 @@ export function SkillsMarketplacePanel({
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-white/70">
-              Skills Marketplace
+              스킬 마켓플레이스
             </div>
             <div className="mt-1 font-mono text-[11px] text-white/40">
-              Browse gateway skills like a curated plugin store.
+              게이트웨이 스킬을 큐레이션된 플러그인 스토어처럼 둘러보세요.
             </div>
           </div>
           <button
@@ -194,29 +203,30 @@ export function SkillsMarketplacePanel({
             className="inline-flex items-center gap-1 rounded border border-cyan-500/20 bg-cyan-500/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-200 transition-colors hover:border-cyan-400/40 hover:text-cyan-100"
           >
             <RefreshCcw className="h-3.5 w-3.5" />
-            Refresh
+            새로고침
           </button>
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         <div className="rounded border border-amber-500/20 bg-amber-500/10 px-3 py-2 font-mono text-[10px] text-amber-100">
-          Packaged skill installs target the selected agent workspace. Global setup actions still affect
-          the whole gateway. Agent access controls below apply only to the selected agent.
+          패키지 스킬 설치는 선택한 에이전트의 워크스페이스에 적용됩니다. 게이트웨이 전역 설정 변경은
+          여전히 게이트웨이 전체에 영향을 주며, 아래 에이전트 접근 설정은 선택한 에이전트에만
+          적용됩니다.
         </div>
 
         <div className="mt-3 rounded border border-cyan-500/15 bg-white/[0.03] px-3 py-3">
           <div className="flex items-center justify-between gap-2">
             <div>
               <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-white/40">
-                Agent context
+                에이전트 문맥
               </div>
               <div className="mt-1 font-mono text-[11px] text-white/75">
-                {marketplace.selectedAgent?.name ?? "No agent selected"}
+                {marketplace.selectedAgent?.name ?? "선택된 에이전트 없음"}
               </div>
             </div>
             <div className="font-mono text-[10px] text-white/35">
-              Access mode: {accessMode === "selected" ? "Selected skills" : accessMode}
+              접근 모드: {ACCESS_MODE_LABELS[accessMode]}
             </div>
           </div>
 
@@ -226,7 +236,7 @@ export function SkillsMarketplacePanel({
               onChange={(event) => marketplace.setSelectedAgentId(event.target.value || null)}
               className="min-w-0 flex-1 rounded border border-white/10 bg-black/40 px-2 py-2 font-mono text-[11px] text-white/80 outline-none"
             >
-              {marketplace.agents.length === 0 ? <option value="">No agents available</option> : null}
+              {marketplace.agents.length === 0 ? <option value="">사용 가능한 에이전트 없음</option> : null}
               {marketplace.agents.map((agent) => (
                 <option key={agent.agentId} value={agent.agentId}>
                   {agent.name}
@@ -243,7 +253,7 @@ export function SkillsMarketplacePanel({
               }}
               className="rounded border border-white/10 bg-white/5 px-2 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-white/75 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Focus chat
+              채팅 보기
             </button>
             <button
               type="button"
@@ -255,7 +265,7 @@ export function SkillsMarketplacePanel({
               }}
               className="rounded border border-white/10 bg-white/5 px-2 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-white/75 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Settings
+              설정
             </button>
           </div>
         </div>
@@ -264,9 +274,9 @@ export function SkillsMarketplacePanel({
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search skills, categories, or sources"
+            placeholder="스킬, 카테고리, 출처 검색"
             className="w-full rounded border border-white/10 bg-black/40 px-3 py-2 font-mono text-[11px] text-white/85 outline-none transition focus:border-cyan-400/35"
-            aria-label="Search marketplace skills"
+            aria-label="마켓플레이스 스킬 검색"
           />
         </div>
 
@@ -298,7 +308,7 @@ export function SkillsMarketplacePanel({
             {marketplace.message.text}
             {marketplace.message.kind === "success" ? (
               <div className="mt-1 font-mono text-[10px] text-emerald-100/80">
-                Check the `HERMES3D` filter below to find the installed skill quickly.
+                아래 `HERMES3D` 필터에서 설치된 스킬을 빠르게 찾을 수 있습니다.
               </div>
             ) : null}
           </div>
@@ -311,14 +321,14 @@ export function SkillsMarketplacePanel({
         ) : null}
 
         {marketplace.loading ? (
-          <div className="mt-4 font-mono text-[11px] text-white/45">Loading marketplace inventory...</div>
+          <div className="mt-4 font-mono text-[11px] text-white/45">마켓플레이스 목록을 불러오는 중...</div>
         ) : null}
 
         {!marketplace.loading && activeFilter === "all" && featuredEntries.length > 0 ? (
           <div className="mt-4">
             <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-white/40">
               <Sparkles className="h-3.5 w-3.5 text-cyan-300" />
-              Featured shelf
+              추천 진열대
             </div>
             <div className="grid gap-2">
               {featuredEntries.map((entry) => (
@@ -334,7 +344,7 @@ export function SkillsMarketplacePanel({
                       <div className="mt-1 font-mono text-[10px] text-cyan-100/75">{entry.metadata.tagline}</div>
                     </div>
                     <div className="rounded border border-cyan-500/20 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] text-cyan-100/85">
-                      {entry.metadata.editorBadge ?? "Featured"}
+                      {entry.metadata.editorBadge ?? "추천"}
                     </div>
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-3 font-mono text-[10px] text-white/55">
@@ -344,14 +354,14 @@ export function SkillsMarketplacePanel({
                           <Star className="h-3 w-3 text-amber-300" />
                           {formatRating(entry.metadata.rating)}
                         </span>
-                        <span>{formatInstalls(entry.metadata.installs)} installs</span>
+                        <span>설치 {formatInstalls(entry.metadata.installs)}회</span>
                       </>
                     ) : null}
                     <span>{entry.metadata.category}</span>
                   </div>
                   {entry.metadata.poweredByName && entry.metadata.poweredByUrl ? (
                     <div className="mt-2 font-mono text-[10px] text-white/55">
-                      Powered by{" "}
+                      제작:{" "}
                       <a
                         href={entry.metadata.poweredByUrl}
                         target="_blank"
@@ -371,7 +381,7 @@ export function SkillsMarketplacePanel({
 
         {!marketplace.loading && filteredCollections.length === 0 ? (
           <div className="mt-4 rounded border border-white/10 bg-white/[0.03] px-3 py-4 font-mono text-[11px] text-white/45">
-            No matching skills found for this gateway.
+            이 게이트웨이에서 조건에 맞는 스킬을 찾지 못했습니다.
           </div>
         ) : null}
 
@@ -385,29 +395,36 @@ export function SkillsMarketplacePanel({
                 {collection.entries.map((entry) => {
                   const packagedSkill = marketplace.packagedSkillsByKey.get(entry.skill.skillKey);
                   const packageOnly = Boolean(packagedSkill && !entry.skill.baseDir.trim());
-                  const isEnabledForAgent = getAgentSkillEnabled(entry.skill.name, accessMode, allowlistSet);
+                  const packagedInstallBlocked =
+                    packageOnly && !marketplace.packagedInstallSupport.supported;
+                  const isEnabledForAgent =
+                    !packageOnly && getAgentSkillEnabled(entry.skill.name, accessMode, allowlistSet);
                   const primaryAction =
                     packageOnly
                       ? {
-                          label: "Install skill",
+                          id: "install-packaged" as const,
+                          label: "스킬 설치",
                           run: () => void marketplace.handleInstallPackagedSkill(entry.skill.skillKey),
                           icon: Download,
                         }
                       : entry.readiness === "needs-setup" && entry.installable
                       ? {
-                          label: "Install deps",
+                          id: "install-deps" as const,
+                          label: "의존성 설치",
                           run: () => void marketplace.handleInstallSkill(entry.skill),
                           icon: Download,
                         }
                       : entry.readiness === "disabled-globally"
                         ? {
-                            label: "Enable gateway",
+                            id: "enable-gateway" as const,
+                            label: "게이트웨이 활성화",
                             run: () => void marketplace.handleSetSkillGlobalEnabled(entry.skill.skillKey, true),
                             icon: Settings2,
                           }
                         : entry.readiness === "needs-setup"
                           ? {
-                              label: "Open settings",
+                              id: "open-settings" as const,
+                              label: "설정 열기",
                               run: () => {
                                 if (marketplace.selectedAgentId) {
                                   onOpenAgentSettings(marketplace.selectedAgentId);
@@ -453,14 +470,14 @@ export function SkillsMarketplacePanel({
                                   <Star className="h-3 w-3 text-amber-300" />
                                   {formatRating(entry.metadata.rating)}
                                 </span>
-                                <span>{formatInstalls(entry.metadata.installs)} installs</span>
+                                <span>설치 {formatInstalls(entry.metadata.installs)}회</span>
                               </>
                             ) : null}
                             <span>{entry.skill.source}</span>
                           </div>
                           {entry.metadata.poweredByName && entry.metadata.poweredByUrl ? (
                             <div className="mt-2 font-mono text-[10px] text-white/55">
-                              Powered by{" "}
+                              제작:{" "}
                               <a
                                 href={entry.metadata.poweredByUrl}
                                 target="_blank"
@@ -494,7 +511,7 @@ export function SkillsMarketplacePanel({
                                 : "border-white/10 bg-white/5 text-white/75 hover:bg-white/10"
                             }`}
                           >
-                            {isEnabledForAgent ? "Disable for agent" : "Enable for agent"}
+                            {isEnabledForAgent ? "에이전트에서 끄기" : "에이전트에서 켜기"}
                           </button>
 
                           <div className="flex flex-wrap justify-end gap-2">
@@ -504,8 +521,9 @@ export function SkillsMarketplacePanel({
                                 onClick={primaryAction.run}
                                 disabled={
                                   marketplace.busySkillKey === entry.skill.skillKey ||
+                                  packagedInstallBlocked ||
                                   (packageOnly && !marketplace.selectedAgentId) ||
-                                  (primaryAction.label === "Open settings" &&
+                                  (primaryAction.id === "open-settings" &&
                                     !marketplace.selectedAgentId)
                                 }
                                 className="inline-flex items-center gap-1 rounded border border-cyan-500/25 bg-cyan-500/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-cyan-100 transition-colors hover:border-cyan-400/40 disabled:cursor-not-allowed disabled:opacity-45"
@@ -523,7 +541,7 @@ export function SkillsMarketplacePanel({
                                 className="inline-flex items-center gap-1 rounded border border-rose-500/25 bg-rose-500/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-100 transition-colors hover:border-rose-400/40 disabled:cursor-not-allowed disabled:opacity-45"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
-                                Remove for all agents
+                                모든 에이전트에서 삭제
                               </button>
                             ) : null}
 
@@ -532,21 +550,28 @@ export function SkillsMarketplacePanel({
                               onClick={() => setDetailSkillKey(entry.skill.skillKey)}
                               className="rounded border border-white/10 bg-white/5 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-white/75 transition-colors hover:bg-white/10"
                             >
-                              Details
+                              자세히
                             </button>
                           </div>
                         </div>
                       </div>
                       <div className="mt-2 flex flex-wrap items-center justify-between gap-2 font-mono text-[10px] text-white/35">
                         <div>
-                          {isEnabledForAgent
-                            ? "This skill is currently enabled for the selected agent."
-                            : "This skill is currently disabled for the selected agent."}
+                          {packageOnly
+                            ? "이 스킬은 아직 게이트웨이에 설치되지 않아 에이전트에서 켤 수 없습니다."
+                            : isEnabledForAgent
+                              ? "이 스킬은 선택한 에이전트에서 켜져 있습니다."
+                              : "이 스킬은 선택한 에이전트에서 꺼져 있습니다."}
                         </div>
                         {entry.removable ? (
-                          <div>Removing from the gateway deletes the installed skill for every agent.</div>
+                          <div>게이트웨이에서 삭제하면 모든 에이전트에서 설치가 제거됩니다.</div>
                         ) : null}
                       </div>
+                      {packagedInstallBlocked && marketplace.packagedInstallSupport.reason ? (
+                        <div className="mt-2 rounded border border-amber-500/20 bg-amber-500/10 px-2 py-1.5 font-mono text-[10px] text-amber-100">
+                          {marketplace.packagedInstallSupport.reason}
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -560,7 +585,7 @@ export function SkillsMarketplacePanel({
           <div className="flex items-start justify-between border-b border-cyan-500/10 px-4 py-3">
             <div>
               <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-white/40">
-                Skill detail
+                스킬 상세
               </div>
               <div className="mt-1 font-mono text-[14px] font-semibold text-white/90">
                 {detailEntry.skill.name}
@@ -570,7 +595,7 @@ export function SkillsMarketplacePanel({
               type="button"
               onClick={() => setDetailSkillKey(null)}
               className="rounded border border-white/10 bg-white/5 p-1.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white"
-              aria-label="Close marketplace detail"
+              aria-label="스킬 상세 닫기"
             >
               <X className="h-4 w-4" />
             </button>
@@ -594,7 +619,7 @@ export function SkillsMarketplacePanel({
               <div className="mt-3 font-mono text-[11px] text-white/75">{detailEntry.metadata.tagline}</div>
               {detailEntry.metadata.poweredByName && detailEntry.metadata.poweredByUrl ? (
                 <div className="mt-3 font-mono text-[10px] text-white/60">
-                  Powered by{" "}
+                  제작:{" "}
                   <a
                     href={detailEntry.metadata.poweredByUrl}
                     target="_blank"
@@ -613,17 +638,17 @@ export function SkillsMarketplacePanel({
                 {!detailEntry.metadata.hideStats ? (
                   <>
                     <div className="rounded border border-white/8 bg-black/30 px-2 py-2">
-                      <div className="text-white/35">Rating</div>
+                      <div className="text-white/35">평점</div>
                       <div className="mt-1 text-white/90">{formatRating(detailEntry.metadata.rating)}</div>
                     </div>
                     <div className="rounded border border-white/8 bg-black/30 px-2 py-2">
-                      <div className="text-white/35">Installs</div>
+                      <div className="text-white/35">설치 수</div>
                       <div className="mt-1 text-white/90">{formatInstalls(detailEntry.metadata.installs)}</div>
                     </div>
                   </>
                 ) : null}
                 <div className="rounded border border-white/8 bg-black/30 px-2 py-2">
-                  <div className="text-white/35">Source</div>
+                  <div className="text-white/35">출처</div>
                   <div className="mt-1 text-white/90">{detailEntry.skill.source}</div>
                 </div>
               </div>
@@ -631,7 +656,7 @@ export function SkillsMarketplacePanel({
 
             <div className="mt-4">
               <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-white/40">
-                Capabilities
+                주요 기능
               </div>
               <div className="mt-2 flex flex-col gap-2">
                 {detailEntry.metadata.capabilities.map((capability) => (
@@ -648,7 +673,7 @@ export function SkillsMarketplacePanel({
             {detailEntry.missingDetails.length > 0 ? (
               <div className="mt-4">
                 <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-white/40">
-                  Setup notes
+                  설정 안내
                 </div>
                 <div className="mt-2 flex flex-col gap-2">
                   {detailEntry.missingDetails.map((line) => (
@@ -664,9 +689,18 @@ export function SkillsMarketplacePanel({
             ) : null}
 
             <div className="mt-4 rounded border border-cyan-500/15 bg-cyan-500/10 px-3 py-3 font-mono text-[10px] text-cyan-100">
-              Packaged installs land in the selected workspace. Gateway setup changes still apply to every
-              agent, and agent enablement depends on the selected agent&apos;s allowlist.
+              패키지 설치는 선택한 워크스페이스에 적용됩니다. 게이트웨이 설정 변경은 모든 에이전트에
+              영향을 주며, 에이전트별 사용 여부는 선택한 에이전트의 허용 목록을 따릅니다.
             </div>
+
+            {marketplace.packagedSkillsByKey.get(detailEntry.skill.skillKey) &&
+            !detailEntry.skill.baseDir.trim() &&
+            !marketplace.packagedInstallSupport.supported &&
+            marketplace.packagedInstallSupport.reason ? (
+              <div className="mt-3 rounded border border-amber-500/20 bg-amber-500/10 px-3 py-3 font-mono text-[10px] text-amber-100">
+                {marketplace.packagedInstallSupport.reason}
+              </div>
+            ) : null}
 
             <div className="mt-4 flex flex-wrap gap-2">
               {marketplace.packagedSkillsByKey.get(detailEntry.skill.skillKey) &&
@@ -674,11 +708,14 @@ export function SkillsMarketplacePanel({
                 <button
                   type="button"
                   onClick={() => void marketplace.handleInstallPackagedSkill(detailEntry.skill.skillKey)}
-                  disabled={marketplace.busySkillKey === detailEntry.skill.skillKey}
+                  disabled={
+                    marketplace.busySkillKey === detailEntry.skill.skillKey ||
+                    !marketplace.packagedInstallSupport.supported
+                  }
                   className="inline-flex items-center gap-1 rounded border border-cyan-500/25 bg-cyan-500/10 px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-cyan-100 transition-colors hover:border-cyan-400/40 disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <Download className="h-3.5 w-3.5" />
-                  Install skill
+                  스킬 설치
                 </button>
               ) : null}
               {detailEntry.readiness === "needs-setup" && detailEntry.installable ? (
@@ -689,7 +726,7 @@ export function SkillsMarketplacePanel({
                   className="inline-flex items-center gap-1 rounded border border-cyan-500/25 bg-cyan-500/10 px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-cyan-100 transition-colors hover:border-cyan-400/40 disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <Download className="h-3.5 w-3.5" />
-                  Install dependencies
+                  의존성 설치
                 </button>
               ) : null}
               {detailEntry.readiness === "disabled-globally" ? (
@@ -702,7 +739,7 @@ export function SkillsMarketplacePanel({
                   className="inline-flex items-center gap-1 rounded border border-cyan-500/25 bg-cyan-500/10 px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-cyan-100 transition-colors hover:border-cyan-400/40 disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <Settings2 className="h-3.5 w-3.5" />
-                  Enable for gateway
+                  게이트웨이에서 켜기
                 </button>
               ) : null}
               <button
@@ -716,7 +753,7 @@ export function SkillsMarketplacePanel({
                 className="inline-flex items-center gap-1 rounded border border-white/10 bg-white/5 px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-white/75 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <Settings2 className="h-3.5 w-3.5" />
-                Manage in settings
+                설정에서 관리
               </button>
               {detailEntry.skill.homepage ? (
                 <a
@@ -726,13 +763,13 @@ export function SkillsMarketplacePanel({
                   className="inline-flex items-center gap-1 rounded border border-white/10 bg-white/5 px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-white/75 transition-colors hover:bg-white/10"
                 >
                   <ExternalLink className="h-3.5 w-3.5" />
-                  Homepage
+                  홈페이지
                 </a>
               ) : null}
             </div>
             <div className="mt-4 rounded border border-white/8 bg-white/[0.03] px-3 py-3 font-mono text-[10px] text-white/60">
-              `Enable/Disable for agent` only changes access for the selected agent. `Remove for all agents`
-              deletes the installed skill from the gateway workspace.
+              `에이전트에서 켜기/끄기`는 선택한 에이전트의 접근 권한만 바꿉니다. `모든 에이전트에서
+              삭제`는 게이트웨이 워크스페이스에서 설치된 스킬 자체를 지웁니다.
             </div>
           </div>
         </div>

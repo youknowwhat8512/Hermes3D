@@ -54,6 +54,23 @@ const buildWebchatBlockedMessage = (field: SessionSettingField) =>
     ? "Model update not applied: this gateway blocks sessions.patch for WebChat clients; message sending still works."
     : "Thinking level update not applied: this gateway blocks sessions.patch for WebChat clients; message sending still works.";
 
+/**
+ * Confirmation for a model pick that persisted to a profile's default.
+ *
+ * A profile-scoped switch outlives this conversation — new sessions and other
+ * clients come up on it — so it is worth one visible line rather than a silent
+ * swap the operator has to infer.
+ */
+const buildProfileDefaultMessage = (result: GatewaySessionsPatchResult, model: string) => {
+  const profile =
+    typeof result.resolved?.profile === "string" ? result.resolved.profile.trim() : "";
+  const target = profile ? `"${profile}"` : "이 프로필";
+  const pending = result.resolved?.pendingTurn === true;
+  return pending
+    ? `${target}의 기본 모델을 ${model}(으)로 저장했습니다. 실행 중인 턴이 끝나면 이 세션에 적용됩니다.`
+    : `${target}의 기본 모델을 ${model}(으)로 저장했습니다. 새 세션과 다른 클라이언트도 이 모델을 사용합니다.`;
+};
+
 export const applySessionSettingMutation = async ({
   agents,
   dispatch,
@@ -103,6 +120,13 @@ export const applySessionSettingMutation = async ({
       agentId,
       patch,
     });
+    if (field === "model" && result.resolved?.scope === "profile") {
+      dispatch({
+        type: "appendOutput",
+        agentId,
+        line: buildProfileDefaultMessage(result, patch.model ?? value ?? ""),
+      });
+    }
   } catch (err) {
     if (isWebchatSessionMutationBlockedError(err)) {
       dispatch({
@@ -123,6 +147,19 @@ export const applySessionSettingMutation = async ({
       });
       return;
     }
+    // Roll the control back to what the gateway actually holds. Leaving the
+    // optimistic value on screen claims a profile default that was never
+    // written, and the next session would silently disagree with the UI.
+    dispatch({
+      type: "updateAgent",
+      agentId,
+      patch: {
+        ...(field === "model"
+          ? { model: previousModel }
+          : { thinkingLevel: previousThinkingLevel }),
+        sessionSettingsSynced: true,
+      },
+    });
     const msg = err instanceof Error ? err.message : buildFallbackError(field);
     dispatch({
       type: "appendOutput",

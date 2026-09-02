@@ -5,10 +5,10 @@ import {
 } from "@/lib/gateway/agentConfig";
 import type { SkillRemoveRequest, SkillRemoveResult } from "@/lib/skills/types";
 
-const normalizeRequired = (value: string, field: string): string => {
-  const trimmed = value.trim();
+const normalizeRequired = (value: unknown, field: string): string => {
+  const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) {
-    throw new Error(`${field} is required.`);
+    throw new Error(`${field} 값이 필요합니다.`);
   }
   return trimmed;
 };
@@ -17,12 +17,12 @@ const escapeForJsonString = (value: string) => JSON.stringify(value);
 
 const resolveRunId = (payload: unknown): string => {
   if (!payload || typeof payload !== "object") {
-    throw new Error("Gateway returned an invalid chat.send response.");
+    throw new Error("게이트웨이가 잘못된 chat.send 응답을 반환했습니다.");
   }
   const record = payload as Record<string, unknown>;
   const runId = typeof record.runId === "string" ? record.runId.trim() : "";
   if (!runId) {
-    throw new Error("Gateway returned an invalid chat.send response (missing runId).");
+    throw new Error("게이트웨이가 잘못된 chat.send 응답을 반환했습니다(runId 없음).");
   }
   return runId;
 };
@@ -95,7 +95,7 @@ export const removeSkillViaGatewayAgent = async (params: {
     })) as { agentId?: unknown };
     removerAgentId = typeof created?.agentId === "string" ? created.agentId.trim() : "";
     if (!removerAgentId) {
-      throw new Error("Gateway returned an invalid agents.create response (missing agentId).");
+      throw new Error("게이트웨이가 잘못된 agents.create 응답을 반환했습니다(agentId 없음).");
     }
 
     await updateGatewayAgentOverrides({

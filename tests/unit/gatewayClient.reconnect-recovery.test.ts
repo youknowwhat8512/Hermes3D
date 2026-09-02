@@ -47,6 +47,22 @@ afterEach(() => {
 });
 
 describe("GatewayClient reconnect recovery", () => {
+  it("settles a pending connect promptly when manually disconnected", async () => {
+    const client = new GatewayClient();
+    const connectResult = client
+      .connect({ gatewayUrl: "ws://example.invalid" })
+      .then(
+        () => "connected",
+        (error: Error) => error.message,
+      );
+
+    expect(instances).toHaveLength(1);
+    client.disconnect();
+
+    await expect(connectResult).resolves.toMatch(/cancel/i);
+    expect(instances[0]?.stopped).toBe(true);
+  });
+
   it("allows a fresh connect after unexpected close", async () => {
     const client = new GatewayClient();
     const statuses: string[] = [];

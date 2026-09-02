@@ -105,13 +105,15 @@ export function applyAgentCollisionBumps({
         escapeTarget = rp;
       }
     }
+    const preserveDeskTarget =
+      moved[i].status === "working" && moved[i].interactionTarget === "desk";
     moved[i] = {
       ...moved[i],
       facing: Math.atan2(fx || sx, fy || sy),
       state: "standing",
       path: [],
-      targetX: escapeTarget.x,
-      targetY: escapeTarget.y,
+      targetX: preserveDeskTarget ? moved[i].targetX : escapeTarget.x,
+      targetY: preserveDeskTarget ? moved[i].targetY : escapeTarget.y,
       bumpedUntil: now + BUMP_FREEZE_MS,
       bumpTalkUntil: now + BUMP_FREEZE_MS,
     };

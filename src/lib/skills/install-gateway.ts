@@ -11,15 +11,16 @@ import {
   type PackagedSkillInstallResult,
 } from "@/lib/skills/types";
 
-const normalizeRequired = (value: string, field: string): string => {
-  const trimmed = value.trim();
+const normalizeRequired = (value: unknown, field: string): string => {
+  const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) {
-    throw new Error(`${field} is required.`);
+    throw new Error(`${field} 값이 필요합니다.`);
   }
   return trimmed;
 };
 
-const normalizeOptional = (value: string | undefined | null): string => value?.trim() ?? "";
+const normalizeOptional = (value: unknown): string =>
+  typeof value === "string" ? value.trim() : "";
 
 const getPathLeaf = (value: string): string => {
   const normalized = value.replace(/[\\/]+$/, "");
@@ -41,9 +42,9 @@ const validateWorkspaceInstallTarget = (params: {
     const targetLabel =
       normalizeOptional(params.agentName) ||
       normalizeOptional(params.agentId) ||
-      "the selected agent";
+      "선택한 에이전트";
     throw new Error(
-      `Cannot install a packaged skill because the workspace reported for ${targetLabel} resolves to the gateway root workspace (${params.workspaceDir}). Re-select the agent and refresh the marketplace before installing.`
+      `${targetLabel}에 대해 보고된 워크스페이스가 게이트웨이 루트 워크스페이스(${params.workspaceDir})로 확인되어 패키지 스킬을 설치할 수 없습니다. 에이전트를 다시 선택하고 마켓플레이스를 새로고침한 뒤 설치해 주세요.`
     );
   }
 };
@@ -75,12 +76,12 @@ const buildInstallerMessage = (params: {
 
 const resolveRunId = (payload: unknown): string => {
   if (!payload || typeof payload !== "object") {
-    throw new Error("Gateway returned an invalid chat.send response.");
+    throw new Error("게이트웨이가 잘못된 chat.send 응답을 반환했습니다.");
   }
   const record = payload as Record<string, unknown>;
   const runId = typeof record.runId === "string" ? record.runId.trim() : "";
   if (!runId) {
-    throw new Error("Gateway returned an invalid chat.send response (missing runId).");
+    throw new Error("게이트웨이가 잘못된 chat.send 응답을 반환했습니다(runId 없음).");
   }
   return runId;
 };
@@ -97,10 +98,10 @@ export const installPackagedSkillViaGatewayAgent = async (params: {
   const packageId = normalizeRequired(params.request.packageId, "packageId");
   const packagedSkill = getPackagedSkillById(packageId);
   if (!packagedSkill) {
-    throw new Error(`Unknown packaged skill: ${packageId}`);
+    throw new Error(`알 수 없는 패키지 스킬입니다: ${packageId}`);
   }
   if (params.request.source !== "hermes-workspace") {
-    throw new Error("Gateway-native packaged install currently supports workspace skills only.");
+    throw new Error("게이트웨이 기본 패키지 설치는 현재 워크스페이스 스킬만 지원합니다.");
   }
 
   let workspaceDir = normalizeRequired(params.request.workspaceDir, "workspaceDir");
@@ -130,7 +131,7 @@ export const installPackagedSkillViaGatewayAgent = async (params: {
     installerAgentId =
       typeof created?.agentId === "string" ? created.agentId.trim() : "";
     if (!installerAgentId) {
-      throw new Error("Gateway returned an invalid agents.create response (missing agentId).");
+      throw new Error("게이트웨이가 잘못된 agents.create 응답을 반환했습니다(agentId 없음).");
     }
 
     await updateGatewayAgentOverrides({

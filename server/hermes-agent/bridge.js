@@ -15,14 +15,20 @@
  */
 
 const { EventEmitter } = require("node:events");
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 
 const { HermesAgentJsonRpcClient, redactUrl } = require("./jsonrpc-client");
 const { createOfficeSpeechSubscriber } = require("./office-speech");
+const { createOfficeActivityTracker } = require("./office-activity");
+const {
+  KANBAN_ACTIVITY_POLL_INTERVAL_MS,
+  createKanbanActivityTracker,
+} = require("./kanban-activity");
 const {
   KANBAN_TASK_ID_PREFIX,
   toHermes3dKanbanTaskRecord,
   toHermes3dKanbanTasks,
+  toKanbanRunningByAssignee,
   toKanbanPatchBody,
   kanbanRequest,
 } = require("./kanban");
@@ -39,6 +45,33 @@ const MAIN_SESSION_KEY = `agent:${AGENT_ID}:${MAIN_KEY}`;
 
 /** hermes-agent's `session.create` / `session.resume` can be slow on a cold profile. */
 const SESSION_RPC_TIMEOUT_MS = 60_000;
+
+/**
+ * How often abandoned external turns are swept.
+ *
+ * A publisher that dies mid-turn never sends its end frame; without this the
+ * character it started would stay green until the page is reloaded.
+ */
+const OFFICE_ACTIVITY_PRUNE_INTERVAL_MS = 60_000;
+
+/**
+ * Profile discovery is identical for tabs aimed at the same authenticated
+ * backend. Reusing it briefly avoids a profiles.list burst during tab reloads
+ * while keeping roster changes visible within a bounded window.
+ */
+const AGENT_ROSTER_CACHE_TTL_MS = 5_000;
+const AGENT_ROSTER_CACHE_MAX_ENTRIES = 8;
+const agentRosterCache = new Map();
+const agentRosterLoads = new Map();
+const agentRosterLoadGenerations = new Map();
+const agentRosterActiveLoads = new Map();
+
+class StaleAgentRosterLoadError extends Error {
+  constructor() {
+    super("Agent roster load was invalidated.");
+    this.name = "StaleAgentRosterLoadError";
+  }
+}
 
 /**
  * The slice of the `ws` WebSocket surface `gateway-proxy.js` relies on.
@@ -162,6 +195,8 @@ const fallbackAgent = () => ({
   workspace: "",
   identity: { name: AGENT_NAME, emoji: "🤖" },
   role: "",
+  model: "",
+  provider: "",
   profile: "",
 });
 
@@ -178,6 +213,11 @@ const toDisplayName = (name) =>
  *
  * The `profile` field is what routes sessions back; the default profile carries
  * an empty string because omitting `profile` means "launch profile" upstream.
+ *
+ * `model` and `provider` are the profile's live pin. Both travel together
+ * because a model id alone is ambiguous — the same name is served by different
+ * providers (claude-sonnet-4-6 via `claude-cli` or `anthropic`), and the office
+ * keys its model dropdown on `provider/model`.
  */
 const toHermes3dAgents = (profiles) => {
   if (!Array.isArray(profiles)) return [];
@@ -200,6 +240,7 @@ const toHermes3dAgents = (profiles) => {
         identity: { name: display, emoji: isDefault ? "🤖" : "🧑‍💻" },
         role,
         model: asString(p.model),
+        provider: asString(p.provider),
         isDefault,
         profile: isDefault ? "" : name,
       };
@@ -211,6 +252,226 @@ const resolveDefaultAgentId = (agents) => {
   const explicit = agents.find((a) => a.isDefault);
   return explicit?.id ?? agents[0]?.id ?? AGENT_ID;
 };
+
+const agentRosterCacheKey = (url, token) =>
+  createHash("sha256")
+    .update(String(url ?? ""))
+    .update("\0")
+    .update(String(token ?? ""))
+    .digest("hex");
+
+const trackedAgentRosterKeyCount = () =>
+  new Set([
+    ...agentRosterCache.keys(),
+    ...agentRosterLoads.keys(),
+    ...agentRosterActiveLoads.keys(),
+  ]).size;
+
+const pruneAgentRosterCache = () => {
+  while (agentRosterCache.size > AGENT_ROSTER_CACHE_MAX_ENTRIES) {
+    const oldest = agentRosterCache.keys().next().value;
+    if (oldest === undefined) break;
+    agentRosterCache.delete(oldest);
+    if (!agentRosterLoads.has(oldest) && !agentRosterActiveLoads.has(oldest)) {
+      agentRosterLoadGenerations.delete(oldest);
+    }
+  }
+};
+
+const startAgentRosterLoad = (key, load) => {
+  const generation = agentRosterLoadGenerations.get(key) ?? 0;
+  agentRosterActiveLoads.set(key, (agentRosterActiveLoads.get(key) ?? 0) + 1);
+  const entry = { promise: null };
+  entry.promise = Promise.resolve()
+    .then(load)
+    .then((profiles) => {
+      if ((agentRosterLoadGenerations.get(key) ?? 0) !== generation) {
+        throw new StaleAgentRosterLoadError();
+      }
+      const normalized = Array.isArray(profiles) ? profiles : [];
+      agentRosterCache.set(key, {
+        profiles: normalized,
+        expiresAt: Date.now() + AGENT_ROSTER_CACHE_TTL_MS,
+        generation,
+      });
+      pruneAgentRosterCache();
+      return normalized;
+    })
+    .finally(() => {
+      if (agentRosterLoads.get(key) === entry) {
+        agentRosterLoads.delete(key);
+      }
+      const active = (agentRosterActiveLoads.get(key) ?? 1) - 1;
+      if (active > 0) {
+        agentRosterActiveLoads.set(key, active);
+      } else {
+        agentRosterActiveLoads.delete(key);
+        if (!agentRosterCache.has(key) && !agentRosterLoads.has(key)) {
+          agentRosterLoadGenerations.delete(key);
+        }
+      }
+    });
+  agentRosterLoads.set(key, entry);
+  return entry.promise;
+};
+
+const loadCachedAgentProfiles = async (key, load, retryDepth = 0) => {
+  const now = Date.now();
+  const generation = agentRosterLoadGenerations.get(key) ?? 0;
+  const cached = agentRosterCache.get(key);
+  if (cached && cached.expiresAt > now && cached.generation === generation) {
+    // Refresh insertion order so pruning behaves as a tiny LRU.
+    agentRosterCache.delete(key);
+    agentRosterCache.set(key, cached);
+    return cached.profiles;
+  }
+  if (cached) agentRosterCache.delete(key);
+
+  const inFlight = agentRosterLoads.get(key);
+  if (inFlight) {
+    try {
+      return await inFlight.promise;
+    } catch (err) {
+      // A shared loader belongs to another disposable tab. Give a still-live
+      // follower one request through its own client instead of inheriting the
+      // leader's close failure.
+      if (retryDepth === 0) {
+        return loadCachedAgentProfiles(key, load, retryDepth + 1);
+      }
+      throw err;
+    }
+  }
+
+  const isKnownKey =
+    agentRosterLoadGenerations.has(key) ||
+    agentRosterCache.has(key) ||
+    agentRosterActiveLoads.has(key);
+  if (!isKnownKey && trackedAgentRosterKeyCount() >= AGENT_ROSTER_CACHE_MAX_ENTRIES) {
+    const profiles = await load();
+    return Array.isArray(profiles) ? profiles : [];
+  }
+
+  try {
+    return await startAgentRosterLoad(key, load);
+  } catch (err) {
+    if (err instanceof StaleAgentRosterLoadError && retryDepth === 0) {
+      return loadCachedAgentProfiles(key, load, retryDepth + 1);
+    }
+    throw err;
+  }
+};
+
+const invalidateAgentRosterCache = (key) => {
+  agentRosterLoadGenerations.set(
+    key,
+    (agentRosterLoadGenerations.get(key) ?? 0) + 1
+  );
+  agentRosterCache.delete(key);
+  // Detach the old generation immediately so nobody can join it. Its promise
+  // still settles for its original waiter, but generation validation prevents
+  // it from publishing stale data.
+  agentRosterLoads.delete(key);
+  if (!agentRosterActiveLoads.has(key)) {
+    agentRosterLoadGenerations.delete(key);
+  }
+};
+
+/**
+ * The office keys every model on `provider/model` and labels it "model ·
+ * provider", so both halves travel together everywhere.
+ */
+const toHermes3dModel = (provider, model) => ({
+  id: model,
+  name: `${model} · ${provider}`,
+  provider,
+});
+
+/**
+ * Flatten hermes-agent's `model.options` into Hermes3D model choices.
+ *
+ * The backend groups models under provider rows (`{slug, models: [...]}`);
+ * Hermes3D wants one flat list where each entry names its provider, because a
+ * bare model id is ambiguous — `claude-sonnet-4-6` is served both by
+ * `anthropic` and by `claude-cli`, and switching to the wrong one fails.
+ */
+const toHermes3dModels = (providerRows) => {
+  if (!Array.isArray(providerRows)) return [];
+  const models = [];
+  const seen = new Set();
+  for (const row of providerRows) {
+    if (!row || typeof row !== "object") continue;
+    const provider = asString(row.slug) || asString(row.provider);
+    if (!provider) continue;
+    for (const raw of Array.isArray(row.models) ? row.models : []) {
+      const model = asString(raw) || asString(raw?.id) || asString(raw?.name);
+      if (!model) continue;
+      const key = `${provider}/${model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      models.push(toHermes3dModel(provider, model));
+    }
+  }
+  return models;
+};
+
+/**
+ * Add the models the fleet is actually pinned to.
+ *
+ * A profile can run a provider that never appears in `model.options` — a CLI
+ * bridge such as `claude-cli` has no catalog to enumerate — and without this
+ * merge that desk's own model is missing from its own dropdown, which is what
+ * made the office fall back to a placeholder.
+ */
+const withRosterModels = (models, agents) => {
+  const merged = [...models];
+  const seen = new Set(merged.map((entry) => `${entry.provider}/${entry.id}`));
+  for (const agent of Array.isArray(agents) ? agents : []) {
+    const provider = asString(agent?.provider);
+    const model = asString(agent?.model);
+    if (!provider || !model) continue;
+    const key = `${provider}/${model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(toHermes3dModel(provider, model));
+  }
+  return merged;
+};
+
+/**
+ * Translate the office's `provider/model` key into hermes-agent's `/model`
+ * grammar (`<model> --provider <slug>`).
+ *
+ * Only the first segment is the provider: aggregator model ids carry their own
+ * slashes (`openrouter/anthropic/claude-x`), so the rest is the model verbatim.
+ * A value with no provider prefix is passed through untouched.
+ */
+const toModelSwitchValue = (raw) => {
+  const value = asString(raw);
+  if (!value) return { value: "", model: "", provider: "" };
+  const slash = value.indexOf("/");
+  if (slash <= 0 || slash === value.length - 1) {
+    return { value, model: value, provider: "" };
+  }
+  const provider = value.slice(0, slash);
+  const model = value.slice(slash + 1);
+  return { value: `${model} --provider ${provider}`, model, provider };
+};
+
+/**
+ * The confirmation hermes-agent is waiting on, or "" when the write went through.
+ *
+ * `config.set` answers a guarded model (expensive tier, data-training policy)
+ * with `confirm_required` and a *successful* JSON-RPC result. Treating that as
+ * a save is how a rejected write gets reported to the operator as applied.
+ */
+const modelConfirmMessage = (result) =>
+  result && result.confirm_required === true
+    ? asString(
+        result.confirm_message,
+        "hermes-agent needs confirmation before switching to this model."
+      )
+    : "";
+
 
 function createHermesAgentUpstream(options) {
   const {
@@ -236,6 +497,7 @@ function createHermesAgentUpstream(options) {
     upstream.terminate = () => {};
     return upstream;
   }
+  const rosterCacheKey = agentRosterCacheKey(url, token);
 
   /** sessionKey -> { runtimeId, storedId, title } */
   const sessions = new Map();
@@ -252,10 +514,35 @@ function createHermesAgentUpstream(options) {
   let defaultAgentId = AGENT_ID;
   /** Optional feed of turns driven from other clients; see ./office-speech.js. */
   let officeSpeech = null;
+  /**
+   * Externally driven turns, reconciled against the runs this bridge owns.
+   * See ./office-activity.js for why a tracker is needed rather than a relay.
+   */
+  const officeActivity = createOfficeActivityTracker();
+  let officeActivityPruneTimer = null;
+  /**
+   * Kanban workers, which publish nothing at all.
+   * See ./kanban-activity.js for why the board has to be polled instead.
+   */
+  const kanbanActivity = createKanbanActivityTracker();
+  let kanbanActivityPollTimer = null;
+  let kanbanActivityPollInFlight = false;
   /** runId -> { sessionKey, runtimeId, buffer, aborted } */
   const activeRuns = new Map();
   /** sessionKey -> runId, so session-scoped events find their run. */
   const runBySessionKey = new Map();
+  /**
+   * sessionKey -> when this bridge last observed real work on it.
+   *
+   * Only genuine signals are recorded (a prompt going out, a reply coming
+   * back, an external turn); nothing stamps "now" merely because a listing was
+   * requested, which is what made every desk look busy.
+   */
+  const sessionActivityAt = new Map();
+  const markSessionActivity = (sessionKey, atMs = Date.now()) => {
+    if (!sessionKey) return;
+    sessionActivityAt.set(sessionKey, atMs);
+  };
 
   let seq = 0;
   let closed = false;
@@ -388,13 +675,15 @@ function createHermesAgentUpstream(options) {
             stopReason: "end_turn",
             message: { role: "assistant", content: finalText },
           });
+          const completedAt = Date.now();
+          markSessionActivity(sessionKey, completedAt);
           emitEvent("presence", {
             sessions: {
-              recent: [{ key: sessionKey, updatedAt: Date.now() }],
+              recent: [{ key: sessionKey, updatedAt: completedAt }],
               byAgent: [
                 {
                   agentId: parseSessionKey(sessionKey).agentId,
-                  recent: [{ key: sessionKey, updatedAt: Date.now() }],
+                  recent: [{ key: sessionKey, updatedAt: completedAt }],
                 },
               ],
             },
@@ -470,11 +759,18 @@ function createHermesAgentUpstream(options) {
 
   // --- method dispatch ------------------------------------------------------
 
-  /** Load the fleet once per connection; a backend without profiles keeps one agent. */
+  /** Load the fleet through a short bounded cache shared by same-backend tabs. */
   const loadAgentRoster = async () => {
     try {
-      const result = await client.request("profiles.list", {}, SESSION_RPC_TIMEOUT_MS);
-      const mapped = toHermes3dAgents(result?.profiles);
+      const profiles = await loadCachedAgentProfiles(
+        rosterCacheKey,
+        async () => {
+          const result = await client.request("profiles.list", {}, SESSION_RPC_TIMEOUT_MS);
+          return result?.profiles;
+        }
+      );
+      if (closed) return;
+      const mapped = toHermes3dAgents(profiles);
       if (mapped.length > 0) {
         agentRoster = mapped;
         defaultAgentId = resolveDefaultAgentId(mapped);
@@ -509,24 +805,180 @@ function createHermesAgentUpstream(options) {
     });
   };
 
+  /**
+   * Emit one externally driven lifecycle transition.
+   *
+   * The office already reacts to `agent` lifecycle events for runs it started
+   * itself, so reusing that stream means an outside turn lights the same
+   * character the same way — no separate presence path to keep in sync.
+   *
+   * Deliberately no `presence` event. The client turns presence into a summary
+   * refresh, and that static hydration overwrites the live agent state — which
+   * cleared the desk in the middle of a turn that was still running. The
+   * freshness bookkeeping this frame implies is kept locally instead, where
+   * `sessions.list` reads it, so the desk is coloured by the lifecycle stream
+   * alone.
+   *
+   * A repeated `start` is the plugin's heartbeat for a turn still in flight.
+   * It is emitted as-is, carrying the same run id as the first one, so a desk
+   * cleared by a hydration or a browser reconnect is relit on the next beat.
+   */
+  const emitActivityLifecycle = (decision, source = "office-activity") => {
+    if (!decision || decision.action === "ignore") return;
+    markSessionActivity(decision.sessionKey, decision.atMs);
+    emitEvent("agent", {
+      runId: decision.runId,
+      sessionKey: decision.sessionKey,
+      stream: "lifecycle",
+      data: {
+        phase: decision.action,
+        // Never the prompt or the reply: this frame exists to colour a desk.
+        text: "",
+        source,
+      },
+    });
+  };
+
+  /**
+   * Relay a lifecycle frame published by the office bridge plugin.
+   *
+   * A turn this bridge is driving already streams its own chat lifecycle, so
+   * those are recognised by their runtime session id and skipped; what is left
+   * is exactly the work started somewhere else.
+   */
+  const handlePublishedActivity = (activity) => {
+    const agent = agentRoster.find((a) => a.id === activity.profile);
+    if (!agent) return;
+    const localSessionKey = activity.sessionId
+      ? sessionKeyByRuntimeId.get(activity.sessionId)
+      : undefined;
+    const ownedByBridge = Boolean(
+      localSessionKey && runBySessionKey.has(localSessionKey)
+    );
+    const decision = officeActivity.plan({
+      agentId: agent.id,
+      sessionKey: localSessionKey || `agent:${agent.id}:${MAIN_KEY}`,
+      sessionId: activity.sessionId,
+      phase: activity.phase,
+      atMs: activity.atMs,
+      ownedByBridge,
+    });
+    emitActivityLifecycle(decision);
+  };
+
   const startOfficeSpeech = () => {
     if (officeSpeech) return;
     officeSpeech = createOfficeSpeechSubscriber({
       url,
       token,
       onTurn: handlePublishedTurn,
+      onActivity: handlePublishedActivity,
       log,
     });
+    if (officeActivityPruneTimer) return;
+    officeActivityPruneTimer = setInterval(() => {
+      for (const decision of officeActivity.prune(Date.now())) {
+        emitActivityLifecycle(decision);
+      }
+    }, OFFICE_ACTIVITY_PRUNE_INTERVAL_MS);
+    if (typeof officeActivityPruneTimer.unref === "function") {
+      officeActivityPruneTimer.unref();
+    }
+  };
+
+  /**
+   * Agents whose desk is already lit by a lifecycle this connection owns.
+   *
+   * A turn driven from Hermes3D and a turn republished by the office bridge
+   * plugin both already run the character; the board must not start a second,
+   * competing run for the same agent.
+   */
+  const busyAgentIds = () => {
+    const busy = new Set(officeActivity.activeAgentIds());
+    for (const sessionKey of runBySessionKey.keys()) {
+      busy.add(parseSessionKey(sessionKey).agentId);
+    }
+    return busy;
+  };
+
+  /** Every agent's main session key, which is the desk the board colours. */
+  const mainSessionKeyByAgentId = () =>
+    new Map(agentRoster.map((agent) => [agent.id, `agent:${agent.id}:${MAIN_KEY}`]));
+
+  /**
+   * Read the board once and emit whatever changed.
+   *
+   * Failures are handed to the tracker rather than logged and dropped: it owns
+   * the grace window that decides when an unreadable board finally means the
+   * work stopped.
+   */
+  const pollKanbanActivity = async () => {
+    if (closed || kanbanActivityPollInFlight) return;
+    kanbanActivityPollInFlight = true;
+    try {
+      const board = await kanbanRequest({
+        wsUrl: url,
+        token,
+        useLoopbackHost: client.usedLoopbackHost,
+        method: "GET",
+        path: "/board?include_archived=false",
+      });
+      if (closed) return;
+      const decisions = kanbanActivity.observe({
+        runningByAgent: toKanbanRunningByAssignee(board),
+        sessionKeyByAgentId: mainSessionKeyByAgentId(),
+        busyAgentIds: busyAgentIds(),
+        atMs: Date.now(),
+      });
+      for (const decision of decisions) {
+        emitActivityLifecycle(decision, "kanban-activity");
+      }
+    } catch {
+      if (closed) return;
+      for (const decision of kanbanActivity.observeError(Date.now())) {
+        emitActivityLifecycle(decision, "kanban-activity");
+      }
+    } finally {
+      kanbanActivityPollInFlight = false;
+    }
+  };
+
+  const startKanbanActivity = () => {
+    if (kanbanActivityPollTimer) return;
+    // An immediate read so a worker already running when the office opens is
+    // green on the first frame rather than one poll later.
+    void pollKanbanActivity();
+    kanbanActivityPollTimer = setInterval(() => {
+      void pollKanbanActivity();
+    }, KANBAN_ACTIVITY_POLL_INTERVAL_MS);
+    if (typeof kanbanActivityPollTimer.unref === "function") {
+      kanbanActivityPollTimer.unref();
+    }
+  };
+
+  const stopKanbanActivity = () => {
+    if (kanbanActivityPollTimer) {
+      clearInterval(kanbanActivityPollTimer);
+      kanbanActivityPollTimer = null;
+    }
+    kanbanActivity.reset();
   };
 
   const handleConnect = async (id) => {
     await loadAgentRoster();
+    if (closed) {
+      return resErr(id, "hermes_agent.connect_cancelled", "Connection closed during setup.");
+    }
     // Only worth subscribing once the roster exists to map turns onto.
     startOfficeSpeech();
+    // Same reason: an assignee is only a desk if it names an agent we have.
+    startKanbanActivity();
     const agents = agentRoster.map((a) => ({
       agentId: a.id,
       name: a.name,
       isDefault: a.id === defaultAgentId,
+      model: asString(a.model),
+      provider: asString(a.provider),
     }));
     return resOk(id, {
       type: "hello-ok",
@@ -581,13 +1033,17 @@ function createHermesAgentUpstream(options) {
         return resOk(id, {
           defaultId: defaultAgentId,
           mainKey: MAIN_KEY,
-          agents: agentRoster.map(({ id: agentId, name, workspace, identity, role }) => ({
-            id: agentId,
-            name,
-            workspace,
-            identity,
-            role,
-          })),
+          agents: agentRoster.map(
+            ({ id: agentId, name, workspace, identity, role, model, provider }) => ({
+              id: agentId,
+              name,
+              workspace,
+              identity,
+              role,
+              model: asString(model),
+              provider: asString(provider),
+            })
+          ),
         });
 
       case "agents.files.get":
@@ -609,11 +1065,33 @@ function createHermesAgentUpstream(options) {
         return resOk(id, { hash: "hermes-agent" });
 
       case "sessions.list": {
+        // Callers ask per agent (`agentId`), and answering with the whole
+        // fleet made every caller's "latest activity" read another profile's
+        // rows. Honour the filter; an unknown id yields nothing rather than
+        // everything.
+        const requestedAgentId = asString(p.agentId);
+        const scopedRoster = requestedAgentId
+          ? agentRoster.filter((agent) => agent.id === requestedAgentId)
+          : agentRoster;
         // Each profile keeps its own session store, so the stored rows have to
         // be read per agent; they're local SQLite reads, so fan out in parallel.
         const perAgent = await Promise.all(
-          agentRoster.map(async (agent) => {
+          scopedRoster.map(async (agent) => {
             const profile = asString(agent.profile);
+            // The profile's own pin is what its sessions actually run on;
+            // reporting a placeholder here is what showed the wrong model on
+            // every desk. Omit the fields entirely when the backend gave us
+            // nothing rather than inventing a value.
+            const agentModel = asString(agent.model);
+            const agentProvider = asString(agent.provider);
+            const modelFields = {
+              ...(agentModel ? { model: agentModel } : {}),
+              ...(agentProvider ? { modelProvider: agentProvider } : {}),
+            };
+            const origin = {
+              label: agent.name,
+              ...(agentProvider ? { provider: agentProvider } : {}),
+            };
             let stored = [];
             try {
               const result = await client.request("session.list", {
@@ -624,22 +1102,28 @@ function createHermesAgentUpstream(options) {
             } catch (err) {
               log(`[hermes-agent] session.list for "${agent.id}" failed: ${errorMessage(err)}`);
             }
+            const mainKey = `agent:${agent.id}:${MAIN_KEY}`;
+            // `Date.now()` here made every listing look like the agent had
+            // just been active, which is the signal the office reads to decide
+            // who is working. Report the real time this bridge last saw the
+            // main session, and null when it has never been used.
+            const mainUpdatedAt = sessionActivityAt.get(mainKey) ?? null;
             return [
               {
-                key: `agent:${agent.id}:${MAIN_KEY}`,
+                key: mainKey,
                 agentId: agent.id,
-                updatedAt: Date.now(),
+                updatedAt: mainUpdatedAt,
                 displayName: "Main",
-                origin: { label: agent.name, provider: "hermes" },
-                modelProvider: "hermes",
+                origin,
+                ...modelFields,
               },
               ...stored.map((s) => ({
                 key: `agent:${agent.id}:${asString(s.id)}`,
                 agentId: agent.id,
                 updatedAt: typeof s.started_at === "number" ? s.started_at * 1000 : null,
                 displayName: asString(s.title, "Session"),
-                origin: { label: agent.name, provider: "hermes" },
-                modelProvider: "hermes",
+                origin,
+                ...modelFields,
               })),
             ];
           })
@@ -677,24 +1161,120 @@ function createHermesAgentUpstream(options) {
 
       case "sessions.patch": {
         const key = asString(p.key, defaultMainKey());
-        const model = typeof p.model === "string" ? p.model.trim() : "";
-        if (model) {
-          try {
-            const entry = await ensureSession(key);
-            await client.request("config.set", {
-              key: "model",
-              value: model,
-              session_id: entry.runtimeId,
-            });
-          } catch (err) {
-            log(`[hermes-agent] model switch failed: ${errorMessage(err)}`);
-          }
+        const switched = toModelSwitchValue(p.model);
+        if (!switched.value) {
+          return resOk(id, {
+            ok: true,
+            key,
+            entry: { thinkingLevel: p.thinkingLevel },
+            resolved: {},
+          });
         }
+
+        // Picking a model in the office is a change to the PROFILE, not just
+        // to this conversation: the operator expects new sessions and other
+        // clients to come up on it too. So the durable write happens first and
+        // the live session only follows once it landed — a session-only switch
+        // that silently forgot itself is the bug this ordering closes.
+        const { agentId } = parseSessionKey(key);
+        const agent = agentRoster.find((a) => a.id === agentId);
+        const profileName = agent ? asString(agent.profile) : "";
+
+        try {
+          if (profileName) {
+            // A named profile owns its own config.yaml; `profiles.configure`
+            // is the only call that writes it without moving this process's
+            // HERMES_HOME. It needs both halves of the pin.
+            if (!switched.provider) {
+              return resErr(
+                id,
+                "hermes_agent.model_provider_required",
+                `Cannot set "${profileName}" default model: "${switched.model}" arrived without a provider.`
+              );
+            }
+            const configured = await client.request(
+              "profiles.configure",
+              { name: profileName, model: switched.model, provider: switched.provider },
+              SESSION_RPC_TIMEOUT_MS
+            );
+            // `profiles.configure` applies each section best-effort and reports
+            // per-section success, so a 200 alone proves nothing.
+            if (configured?.applied?.model !== true) {
+              return resErr(
+                id,
+                "hermes_agent.profile_model_write_failed",
+                `hermes-agent did not save "${switched.model}" as profile "${profileName}"'s default model.`
+              );
+            }
+          } else {
+            // The default profile has no `profiles/<name>` directory, so its
+            // default lives in the root config — written through the same
+            // `/model --global` grammar the CLI and TUI persist with.
+            const persisted = await client.request("config.set", {
+              key: "model",
+              value: `${switched.value} --global`,
+            });
+            const confirm = modelConfirmMessage(persisted);
+            if (confirm) {
+              return resErr(id, "hermes_agent.model_confirm_required", confirm);
+            }
+          }
+        } catch (err) {
+          return resErr(
+            id,
+            "hermes_agent.model_persist_failed",
+            `Saving "${switched.model}" as "${agentId}"'s default model failed: ${errorMessage(err)}`
+          );
+        }
+
+        // A model write changes profile discovery output. Do not hand a newly
+        // opened tab the pre-write roster during the bounded cache window.
+        invalidateAgentRosterCache(rosterCacheKey);
+
+        // Only now is the roster telling the truth; sessions.list and the next
+        // hello report the pin that is actually on disk.
+        if (agent) {
+          agent.model = switched.model;
+          if (switched.provider) agent.provider = switched.provider;
+        }
+
+        let pendingTurn = false;
+        try {
+          const entry = await ensureSession(key);
+          const applied = await client.request("config.set", {
+            key: "model",
+            // hermes-agent parses `/model` grammar, not `provider/model`:
+            // sending the office key verbatim makes it hunt for a model
+            // literally named "anthropic/claude-opus-4-5".
+            value: switched.value,
+            session_id: entry.runtimeId,
+          });
+          const confirm = modelConfirmMessage(applied);
+          if (confirm) {
+            return resErr(id, "hermes_agent.model_confirm_required", confirm);
+          }
+          // A turn already streaming can't swap model mid-flight; hermes-agent
+          // stashes the pick and applies it at the next turn instead.
+          pendingTurn = applied?.deferred === true;
+        } catch (err) {
+          return resErr(
+            id,
+            "hermes_agent.session_model_switch_failed",
+            `Saved "${switched.model}" as "${agentId}"'s default model, but this session did not switch: ${errorMessage(err)}. New sessions will use "${switched.model}".`
+          );
+        }
+
         return resOk(id, {
           ok: true,
           key,
           entry: { thinkingLevel: p.thinkingLevel },
-          resolved: { model: model || undefined, modelProvider: "hermes" },
+          resolved: {
+            model: switched.model,
+            ...(switched.provider ? { modelProvider: switched.provider } : {}),
+            scope: "profile",
+            profile: agentId,
+            ...(pendingTurn ? { pendingTurn: true } : {}),
+          },
         });
       }
 
@@ -735,6 +1315,7 @@ function createHermesAgentUpstream(options) {
           runBySessionKey.delete(sessionKey);
           return resErr(id, "hermes_agent.prompt_failed", errorMessage(err));
         }
+        markSessionActivity(sessionKey);
 
         return resOk(id, { status: "started", runId });
       }
@@ -789,7 +1370,14 @@ function createHermesAgentUpstream(options) {
       }
 
       case "status": {
-        const recent = [...sessions.keys()].map((key) => ({ key, updatedAt: Date.now() }));
+        // Same rule as sessions.list: report when work was actually seen, not
+        // the time of the poll. A session this bridge has never driven has no
+        // activity to report, so it is left out entirely rather than being
+        // stamped with now.
+        const recent = [...sessions.keys()].flatMap((key) => {
+          const updatedAt = sessionActivityAt.get(key);
+          return typeof updatedAt === "number" ? [{ key, updatedAt }] : [];
+        });
         const byAgent = agentRoster.map((agent) => ({
           agentId: agent.id,
           recent: recent.filter((entry) => parseSessionKey(entry.key).agentId === agent.id),
@@ -810,16 +1398,18 @@ function createHermesAgentUpstream(options) {
       }
 
       case "models.list": {
+        // The roster's own pins are always offered, even when the catalog is
+        // unavailable — a desk must at least be able to show what it runs on.
+        // Nothing is synthesised: an empty list is the honest answer when the
+        // backend knows of no models at all.
         try {
           const result = await client.request("model.options", {});
-          const options = Array.isArray(result?.options) ? result.options : [];
-          const models = options
-            .map((o) => asString(o?.id) || asString(o?.slug) || asString(o?.model))
-            .filter(Boolean)
-            .map((modelId) => ({ id: modelId, name: modelId }));
-          return resOk(id, { models: models.length ? models : [{ id: "hermes", name: "hermes" }] });
-        } catch {
-          return resOk(id, { models: [{ id: "hermes", name: "hermes" }] });
+          return resOk(id, {
+            models: withRosterModels(toHermes3dModels(result?.providers), agentRoster),
+          });
+        } catch (err) {
+          log(`[hermes-agent] model.options unavailable: ${errorMessage(err)}`);
+          return resOk(id, { models: withRosterModels([], agentRoster) });
         }
       }
 
@@ -969,6 +1559,12 @@ function createHermesAgentUpstream(options) {
   const stopOfficeSpeech = () => {
     officeSpeech?.close();
     officeSpeech = null;
+    if (officeActivityPruneTimer) {
+      clearInterval(officeActivityPruneTimer);
+      officeActivityPruneTimer = null;
+    }
+    officeActivity.reset();
+    stopKanbanActivity();
   };
 
   upstream.close = (code, reason) => {
@@ -1013,6 +1609,9 @@ module.exports = {
   toHermes3dCronJobs,
   toHermes3dSchedule,
   toHermes3dAgents,
+  toHermes3dModels,
+  withRosterModels,
+  toModelSwitchValue,
   resolveDefaultAgentId,
   MAIN_SESSION_KEY,
   AGENT_ID,

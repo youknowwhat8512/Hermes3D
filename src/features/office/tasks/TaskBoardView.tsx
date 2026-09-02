@@ -65,28 +65,28 @@ const STATUS_META: Record<
     label: "Working",
     hint: "Agent executing",
     icon: Loader2,
-    headerClass: "text-amber-200/90",
-    countClass: "bg-amber-400/15 text-amber-100",
-    cardSelectedClass: "border-amber-400/40 bg-amber-500/[0.10]",
-    cardIdleClass: "hover:border-amber-400/25 hover:bg-amber-500/[0.05]",
+    headerClass: "text-green-200/90",
+    countClass: "bg-green-400/15 text-green-100",
+    cardSelectedClass: "border-green-400/40 bg-green-500/[0.10]",
+    cardIdleClass: "hover:border-green-400/25 hover:bg-green-500/[0.05]",
   },
   needs_attention: {
     label: "Needs Attention",
     hint: "Approvals and errors",
     icon: ShieldAlert,
-    headerClass: "text-rose-200/90",
-    countClass: "bg-rose-400/15 text-rose-100",
-    cardSelectedClass: "border-rose-400/40 bg-rose-500/[0.10]",
-    cardIdleClass: "hover:border-rose-400/25 hover:bg-rose-500/[0.05]",
+    headerClass: "text-amber-200/90",
+    countClass: "bg-amber-400/15 text-amber-100",
+    cardSelectedClass: "border-amber-400/40 bg-amber-500/[0.10]",
+    cardIdleClass: "hover:border-amber-400/25 hover:bg-amber-500/[0.05]",
   },
   done: {
     label: "Done",
     hint: "Shipped and learned",
     icon: Sparkles,
-    headerClass: "text-emerald-200/90",
-    countClass: "bg-emerald-400/15 text-emerald-100",
-    cardSelectedClass: "border-emerald-400/40 bg-emerald-500/[0.10]",
-    cardIdleClass: "hover:border-emerald-400/25 hover:bg-emerald-500/[0.05]",
+    headerClass: "text-cyan-200/90",
+    countClass: "bg-cyan-400/15 text-cyan-100",
+    cardSelectedClass: "border-cyan-400/40 bg-cyan-500/[0.10]",
+    cardIdleClass: "hover:border-cyan-400/25 hover:bg-cyan-500/[0.05]",
   },
 };
 
@@ -226,9 +226,13 @@ export function TaskBoardView({
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-white/40">
               <span>{subtitle}</span>
-              <span className="text-amber-200/70">{workingCount} working</span>
+              <span className={STATUS_META.working.headerClass}>
+                {workingCount} working
+              </span>
               {attentionCount > 0 ? (
-                <span className="text-rose-300/80">{attentionCount} need attention</span>
+                <span className={STATUS_META.needs_attention.headerClass}>
+                  {attentionCount} need attention
+                </span>
               ) : null}
               {learnedCount > 0 ? (
                 <span className="text-emerald-300/70">{learnedCount} skills learned</span>

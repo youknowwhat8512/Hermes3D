@@ -27,6 +27,24 @@ const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 15_000, 30_000];
 const FRAME_KIND = "agent.turn";
 
 /**
+ * Lifecycle frame the plugin emits when a turn starts and when it ends.
+ *
+ * It carries no conversation text at all — only who, where, and which phase —
+ * because it exists to colour a character, not to mirror a transcript.
+ */
+const ACTIVITY_FRAME_KIND = "agent.activity";
+
+const ACTIVITY_PHASES = new Set(["start", "end", "error"]);
+
+/**
+ * A lifecycle frame older than this is dropped.
+ *
+ * Longer than a turn preview's window: a start that took a while to arrive
+ * still matters (the agent really is working), whereas stale speech does not.
+ */
+const MAX_ACTIVITY_AGE_MS = 120_000;
+
+/**
  * A turn older than this is dropped. Reconnecting can deliver a backlog, and
  * replaying stale speech would huddle idle characters for no reason.
  */
@@ -89,9 +107,45 @@ const parseTurnFrame = (raw, nowMs = Date.now()) => {
 };
 
 /**
+ * Validate one published lifecycle frame.
+ *
+ * Deliberately stricter than the turn parser: an unknown phase, a missing
+ * profile, or a frame the plugin did not stamp is dropped rather than guessed
+ * at, because a bad frame here leaves a character stuck in the wrong colour.
+ */
+const parseActivityFrame = (raw, nowMs = Date.now()) => {
+  let frame;
+  try {
+    frame = JSON.parse(typeof raw === "string" ? raw : String(raw));
+  } catch {
+    return null;
+  }
+  if (!frame || typeof frame !== "object") return null;
+  if (frame.kind !== ACTIVITY_FRAME_KIND) return null;
+
+  const profile = typeof frame.profile === "string" ? frame.profile.trim() : "";
+  if (!profile) return null;
+
+  const phase = typeof frame.phase === "string" ? frame.phase.trim() : "";
+  if (!ACTIVITY_PHASES.has(phase)) return null;
+
+  const atMs = Number.isFinite(frame.atMs) ? Number(frame.atMs) : nowMs;
+  if (nowMs - atMs > MAX_ACTIVITY_AGE_MS) return null;
+
+  return {
+    profile,
+    phase,
+    sessionId: typeof frame.sessionId === "string" ? frame.sessionId.trim() : "",
+    platform: typeof frame.platform === "string" ? frame.platform.trim() : "",
+    atMs,
+  };
+};
+
+/**
  * Subscribe to published turns.
  *
- * `onTurn` is called with `{ profile, text, sessionId, atMs }`. Returns a
+ * `onTurn` is called with `{ profile, text, sessionId, atMs }`, and
+ * `onActivity` with `{ profile, phase, sessionId, platform, atMs }`. Returns a
  * handle with `close()`.
  */
 function createOfficeSpeechSubscriber(options) {
@@ -100,6 +154,7 @@ function createOfficeSpeechSubscriber(options) {
     token,
     channel = DEFAULT_CHANNEL,
     onTurn,
+    onActivity,
     hostHeader = "",
     loopbackHostFallback = true,
     log = () => {},
@@ -145,6 +200,17 @@ function createOfficeSpeechSubscriber(options) {
 
     ws.on("message", (raw) => {
       const asText = Buffer.isBuffer(raw) ? raw.toString() : raw;
+      // Lifecycle first: it is the frame that decides a character's colour,
+      // and it shares the channel with speech.
+      const activity = parseActivityFrame(asText);
+      if (activity) {
+        try {
+          onActivity?.(activity);
+        } catch (err) {
+          log(`[office-speech] activity handler failed: ${err.message}`);
+        }
+        return;
+      }
       const turn = parseTurnFrame(asText);
       if (!turn) {
         log("[office-speech] frame rejected by parser");
@@ -191,10 +257,13 @@ function createOfficeSpeechSubscriber(options) {
 }
 
 module.exports = {
+  ACTIVITY_FRAME_KIND,
   DEFAULT_CHANNEL,
   HERMES_AGENT_EVENTS_PATH,
+  MAX_ACTIVITY_AGE_MS,
   MAX_TURN_AGE_MS,
   buildEventsUrl,
   createOfficeSpeechSubscriber,
+  parseActivityFrame,
   parseTurnFrame,
 };

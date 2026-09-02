@@ -1,6 +1,6 @@
 name: hermes3d-office-bridge
-version: 1.0.0
-description: "Publish each agent turn onto the Hermes dashboard event bus so Hermes3D can visualise conversations. Observation only — never alters a turn."
+version: 1.2.0
+description: "Publish each agent's activity and finished turns onto the Hermes dashboard event bus so Hermes3D can show who is working and visualise conversations. Observation only — never alters a turn."
 author: Hermes3D
 kind: standalone
 platforms:
@@ -8,4 +8,6 @@ platforms:
   - macos
   - windows
 hooks:
+  - pre_llm_call
   - post_llm_call
+  - on_session_end

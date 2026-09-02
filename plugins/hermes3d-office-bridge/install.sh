@@ -72,6 +72,9 @@ for target in "${targets[@]}"; do
   rm -rf "$dest"
   cp -R "$SOURCE_DIR" "$dest"
   rm -f "$dest/install.sh"
+  # The plugin's own tests are a repo artefact, not something a backend loads.
+  rm -f "$dest"/test_*.py
+  rm -rf "$dest/__pycache__"
 
   if [[ -n "$profile" ]]; then
     "$HERMES_BIN" -p "$profile" plugins enable "$PLUGIN_NAME" >/dev/null 2>&1 || true
