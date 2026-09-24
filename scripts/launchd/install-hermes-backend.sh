@@ -78,6 +78,13 @@ PLIST_BODY="$(cat <<PLIST
     <string>$REPO_ROOT</string>
     <key>HERMES_BIN</key>
     <string>$HERMES_BIN_PATH</string>
+    <key>JA_OFFICE_BACKEND_PORT</key>
+    <string>$PORT</string>
+    <!-- Proof-of-launchd marker. start-hermes-backend.sh refuses the reserved
+         port unless it sees this label, so a hand-started backend can never
+         race this job for 127.0.0.1:$PORT. -->
+    <key>JA_OFFICE_LAUNCHD_MANAGED</key>
+    <string>$LABEL</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

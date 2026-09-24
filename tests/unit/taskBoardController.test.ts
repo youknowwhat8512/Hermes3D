@@ -8,6 +8,8 @@ import {
   deriveLiveSessionTaskCard,
   isActionableTaskRequest,
   parseExplicitTaskEvent,
+  selectAgentEventCard,
+  syncCardWithAgent,
   syncCardWithLinkedRun,
 } from "@/features/office/tasks/useTaskBoardController";
 
@@ -21,6 +23,32 @@ const makeAgent = (overrides: Partial<AgentState> = {}) =>
   }) as AgentState;
 
 describe("task board controller helpers", () => {
+  const makeCard = (overrides: Record<string, unknown> = {}) => ({
+    id: "manual:task-1",
+    title: "Review patch",
+    description: "",
+    status: "scheduled" as const,
+    source: "hermes3d_manual" as const,
+    sourceEventId: null,
+    assignedAgentId: "agent-1",
+    createdAt: "2026-03-29T10:00:00.000Z",
+    updatedAt: "2026-03-29T10:00:00.000Z",
+    playbookJobId: null,
+    runId: null,
+    channel: null,
+    externalThreadId: null,
+    lastActivityAt: null,
+    notes: [],
+    isArchived: false,
+    isInferred: false,
+    model: null,
+    skills: [] as string[],
+    subagentCount: 0,
+    scheduledFor: null,
+    learnedSkill: false,
+    ...overrides,
+  });
+
   it("parses explicit Hermes task events", () => {
     const parsed = parseExplicitTaskEvent({
       type: "event",
@@ -203,6 +231,46 @@ describe("task board controller helpers", () => {
     );
 
     expect(card).toBeNull();
+  });
+
+  it("does not bind generic agent events to backend-owned kanban cards", () => {
+    const backendCard = makeCard({
+      id: "kanban:t_backend",
+      updatedAt: "2026-03-29T10:02:00.000Z",
+    });
+    const localCard = makeCard({ id: "manual:t_local", isInferred: true });
+
+    expect(
+      selectAgentEventCard([backendCard, localCard], "agent-1", "run-new"),
+    ).toBe(localCard);
+    expect(
+      selectAgentEventCard([backendCard], "agent-1", "run-new"),
+    ).toBeUndefined();
+  });
+
+  it("keeps backend-owned kanban status visually authoritative", () => {
+    const backendCard = makeCard({
+      id: "kanban:t_backend",
+      runId: "run-1",
+      status: "scheduled",
+    });
+    const run: RunRecord = {
+      runId: "run-1",
+      agentId: "agent-1",
+      agentName: "Agent One",
+      startedAt: Date.parse("2026-03-29T10:00:00.000Z"),
+      endedAt: Date.parse("2026-03-29T10:03:00.000Z"),
+      outcome: "ok",
+      trigger: "user",
+    };
+
+    expect(syncCardWithLinkedRun(backendCard, [run])).toBe(backendCard);
+    expect(
+      syncCardWithAgent(
+        backendCard,
+        [makeAgent({ awaitingUserInput: true, lastActivityAt: run.endedAt })],
+      ),
+    ).toBe(backendCard);
   });
 
   it("updates linked run cards to done or needs_attention", () => {

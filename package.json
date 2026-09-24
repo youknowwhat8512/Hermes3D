@@ -10,6 +10,8 @@
     "demo-gateway": "node server/demo-gateway-adapter.js",
     "build": "next build",
     "start": "node server/index.js",
+    "office": "bash scripts/open-ja-office.sh",
+    "office:check": "bash scripts/open-ja-office.sh --check",
     "lint": "eslint .",
     "cleanup:ux-artifacts": "node scripts/cleanup-ux-artifacts.mjs",
     "studio:setup": "node scripts/studio-setup.js",

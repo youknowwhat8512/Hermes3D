@@ -474,10 +474,127 @@ export const deriveLiveSessionTaskCard = (
     isInferred: false,
   });
 
+/**
+ * Lifecycle sources that only exist to colour a desk.
+ *
+ * `server/hermes-agent/kanban-activity.js` reconciles the native board and
+ * `office-activity.js` relays turns published by other frontends; both
+ * synthesise `agent` lifecycle frames so a character stays green while a
+ * dispatcher-spawned worker runs. They are observations of state, never a run
+ * this board owns, so they must never become an authoritative task write —
+ * doing so PATCHed native Hermes cards to `working`/`done`, killing live
+ * workers and completing cards with no run and no artifacts.
+ */
+const OBSERVATIONAL_LIFECYCLE_SOURCES = new Set([
+  "kanban-activity",
+  "office-activity",
+]);
+
+/** The kanban tracker's deterministic run id; see buildKanbanRunId there. */
+const KANBAN_ACTIVITY_RUN_ID_PREFIX = "kanban-activity:";
+
+export const isObservationalLifecycleFrame = (event: EventFrame): boolean => {
+  if (event.event !== "agent") return false;
+  const payload = isRecord(event.payload) ? event.payload : {};
+  const data = isRecord(payload.data) ? payload.data : {};
+  const source = trimOrNull(data.source);
+  if (source && OBSERVATIONAL_LIFECYCLE_SOURCES.has(source)) return true;
+  const runId = trimOrNull(payload.runId);
+  return Boolean(runId?.startsWith(KANBAN_ACTIVITY_RUN_ID_PREFIX));
+};
+
+export type AgentLifecycleCardEffect =
+  | {
+      kind: "update";
+      cardId: string;
+      patch: Partial<TaskBoardCard>;
+    }
+  | {
+      kind: "create_inferred";
+      card: TaskBoardCard;
+    };
+
+/**
+ * Decide what an `agent` lifecycle frame should do to the board.
+ *
+ * Returns `null` whenever nothing may be written. Pure so the feedback-loop
+ * rules can be asserted directly in tests.
+ */
+export const planAgentLifecycleCardEffect = (input: {
+  event: EventFrame;
+  agents: AgentState[];
+  cards: TaskBoardCard[];
+}): AgentLifecycleCardEffect | null => {
+  const { event, agents, cards } = input;
+  if (event.event !== "agent") return null;
+  // Display telemetry observes work; it never drives task state.
+  if (isObservationalLifecycleFrame(event)) return null;
+
+  const payload = isRecord(event.payload) ? event.payload : {};
+  const sessionKey = trimOrNull(payload.sessionKey);
+  const runId = trimOrNull(payload.runId);
+  const data = isRecord(payload.data) ? payload.data : {};
+  const phase = trimOrNull(data.phase);
+  const agentId = resolveAgentIdFromSession(agents, sessionKey);
+  if (!agentId || !runId || !phase) return null;
+
+  const candidate = selectAgentEventCard(cards, agentId, runId);
+
+  if (!candidate) {
+    if (phase !== "start") return null;
+    // Hermes started an agent run -- trust that as the classification signal.
+    const agent = agents.find((a) => a.agentId === agentId);
+    const userText = normalizeTaskRequestText(
+      agent?.lastUserMessage?.trim() ?? "",
+    );
+    if (!userText) return null;
+    const nowIso = new Date().toISOString();
+    const cardId = `run:${sessionKey ?? agentId}:${runId}`;
+    return {
+      kind: "create_inferred",
+      card: makeCard({
+        id: cardId,
+        title: truncateTitle(userText, "Incoming request"),
+        description: userText,
+        status: "working",
+        source: "hermes_event",
+        sourceEventId: cardId,
+        assignedAgentId: agentId,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        runId,
+        externalThreadId: sessionKey,
+        lastActivityAt: nowIso,
+        isInferred: true,
+      }),
+    };
+  }
+
+  const nextStatus =
+    phase === "start"
+      ? "working"
+      : phase === "error"
+        ? "needs_attention"
+        : phase === "end"
+          ? "done"
+          : null;
+  if (!nextStatus) return null;
+  return {
+    kind: "update",
+    cardId: candidate.id,
+    patch: {
+      runId,
+      status: nextStatus,
+      lastActivityAt: new Date().toISOString(),
+    },
+  };
+};
+
 export const syncCardWithLinkedRun = (
   card: TaskBoardCard,
   runLog: RunRecord[],
 ): TaskBoardCard => {
+  if (isKanbanManagedTaskId(card.id)) return card;
   if (!card.runId) return card;
   const run = runLog.find((entry) => entry.runId === card.runId);
   if (!run) return card;
@@ -497,10 +614,11 @@ export const syncCardWithLinkedRun = (
   };
 };
 
-const syncCardWithAgent = (
+export const syncCardWithAgent = (
   card: TaskBoardCard,
   agents: AgentState[],
 ): TaskBoardCard => {
+  if (isKanbanManagedTaskId(card.id)) return card;
   if (!card.assignedAgentId) return card;
   const agent = agents.find((entry) => entry.agentId === card.assignedAgentId);
   if (!agent) return card;
@@ -515,6 +633,23 @@ const syncCardWithAgent = (
   }
   return card;
 };
+
+export const selectAgentEventCard = (
+  cards: TaskBoardCard[],
+  agentId: string,
+  runId: string,
+): TaskBoardCard | undefined =>
+  cards
+    .filter(
+      (card) =>
+        !isKanbanManagedTaskId(card.id) &&
+        card.assignedAgentId === agentId &&
+        !card.isArchived &&
+        (card.runId === runId || (!card.runId && card.status !== "done")),
+    )
+    .sort(
+      (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt),
+    )[0];
 
 const compareDuplicatePriority = (
   left: TaskBoardCard,
@@ -1317,80 +1452,18 @@ export const useTaskBoardController = ({
       }
 
       if (event.event === "agent") {
-        const payload = isRecord(event.payload) ? event.payload : {};
-        const sessionKey = trimOrNull(payload.sessionKey);
-        const runId = trimOrNull(payload.runId);
-        const data = isRecord(payload.data) ? payload.data : {};
-        const phase = trimOrNull(data.phase);
-        const agentId = resolveAgentIdFromSession(agents, sessionKey);
-        if (!agentId || !runId || !phase) return;
-        const candidates = stateRef.current.cards
-          .filter(
-            (card) =>
-              card.assignedAgentId === agentId &&
-              !card.isArchived &&
-              (card.runId === runId || (!card.runId && card.status !== "done")),
-          )
-          .sort(
-            (left, right) =>
-              Date.parse(right.updatedAt) - Date.parse(left.updatedAt),
-          );
-        const candidate = candidates[0];
-
-        if (!candidate && phase === "start") {
-          // Hermes started an agent run -- trust that as the classification signal.
-          const agent = agents.find((a) => a.agentId === agentId);
-          const userText = normalizeTaskRequestText(
-            agent?.lastUserMessage?.trim() ?? "",
-          );
-          if (userText) {
-            const nowIso = new Date().toISOString();
-            const cardId = `run:${sessionKey ?? agentId}:${runId}`;
-            const newCard = makeCard({
-              id: cardId,
-              title: truncateTitle(userText, "Incoming request"),
-              description: userText,
-              status: "working",
-              source: "hermes_event",
-              sourceEventId: cardId,
-              assignedAgentId: agentId,
-              createdAt: nowIso,
-              updatedAt: nowIso,
-              runId,
-              externalThreadId: sessionKey,
-              lastActivityAt: nowIso,
-              isInferred: true,
-            });
-            dispatch({ type: "upsert", card: newCard });
-            void persistLiveSessionTask(newCard);
-          }
+        const effect = planAgentLifecycleCardEffect({
+          event,
+          agents,
+          cards: stateRef.current.cards,
+        });
+        if (!effect) return;
+        if (effect.kind === "create_inferred") {
+          dispatch({ type: "upsert", card: effect.card });
+          void persistLiveSessionTask(effect.card);
           return;
         }
-
-        if (!candidate) return;
-        if (phase === "start") {
-          void updateCard(candidate.id, {
-            runId,
-            status: "working",
-            lastActivityAt: new Date().toISOString(),
-          });
-          return;
-        }
-        if (phase === "error") {
-          void updateCard(candidate.id, {
-            runId,
-            status: "needs_attention",
-            lastActivityAt: new Date().toISOString(),
-          });
-          return;
-        }
-        if (phase === "end") {
-          void updateCard(candidate.id, {
-            runId,
-            status: "done",
-            lastActivityAt: new Date().toISOString(),
-          });
-        }
+        void updateCard(effect.cardId, effect.patch);
       }
     },
     [agents, archiveMatchingInferredCards, persistLiveSessionTask, updateCard],

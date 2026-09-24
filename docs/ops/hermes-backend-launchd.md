@@ -11,11 +11,51 @@ launchd user agent로 상시 기동한다.
 
 앱(포트 3000)은 `ja-office-app-launchd.md`를 본다.
 
+## 포트 9137 단독 소유 (가장 중요)
+
+`127.0.0.1:9137`은 **`dev.ja-office.hermes-backend` LaunchAgent만** 점유한다.
+손으로 띄운 두 번째 백엔드가 bind 경쟁에서 이기면 launchd는 EADDRINUSE 재시도를
+반복하고, 앱은 **다른 세션 토큰을 가진** upstream에 붙어 HTTP 403을 받는다.
+사용자에게는 `Gateway closed (1011): connect failed`로 보인다.
+
+이때 `3000`과 `9137` 모두 **HTTP 200을 반환하므로 상태 판정에 쓸 수 없다.**
+유일하게 결정적인 조건은 두 가지다.
+
+1. 포트의 listener PID == launchd service PID
+2. 인증된 same-origin WebSocket이 `adapterType=hermes-agent`로 응답
+
+그래서 `start-hermes-backend.sh`는 `JA_OFFICE_LAUNCHD_MANAGED=dev.ja-office.hermes-backend`
+가 없으면 9137 실행을 **`.env`를 읽기 전에** 거부한다. 이 표식은 installer가
+plist에 넣으므로 launchd 경로만 통과한다. 다른 포트(예: 9199) 실행은 그대로 된다.
+
+### 금지된 복구 방법
+
+```bash
+# 금지 — 추적되지 않는 백엔드가 포트를 선점해 1011 오류를 만든다
+python3 scripts/spawn-detached.py logs/hermes-backend-9137.log \
+  bash scripts/start-hermes-backend.sh dashboard 9137
+hermes dashboard --host 127.0.0.1 --port 9137 ...
+```
+
+### 올바른 복구 방법
+
+```bash
+cd <repo>/ja-office
+bash scripts/open-ja-office.sh          # 검증 통과 후에만 사무실을 연다
+launchctl kickstart -k gui/$(id -u)/dev.ja-office.hermes-backend
+bash scripts/launchd/verify-ja-office-stack.sh
+```
+
+포트를 낯선 프로세스가 잡고 있으면 installer와 실행기는 **절대 자동으로 죽이지
+않고** PID를 보여주며 중단한다. 확인 후 직접 정리하거나 `--adopt-pid <PID>`로
+명시적으로 인수한다.
+
 ## 구성 요소
 
 | 파일 | 역할 |
 |---|---|
-| `scripts/start-hermes-backend.sh` | 실제 기동 스크립트. `.env`에서 토큰을 읽어 `HERMES_DASHBOARD_SESSION_TOKEN`으로 넘긴다. |
+| `scripts/open-ja-office.sh` | **사무실을 여는 단일 진입점.** 검증 통과 후에만 브라우저를 연다. `--check`는 열지 않는다. |
+| `scripts/start-hermes-backend.sh` | 실제 기동 스크립트. `.env`에서 토큰을 읽어 `HERMES_DASHBOARD_SESSION_TOKEN`으로 넘긴다. 9137은 launchd 표식이 없으면 거부한다. |
 | `scripts/launchd/install-hermes-backend.sh` | plist 생성 + bootstrap. `--dry-run`은 plist만 출력. |
 | `scripts/launchd/uninstall-hermes-backend.sh` | bootout + plist 제거/보존/백업복구. |
 | `scripts/launchd/verify-hermes-backend.sh` | 백엔드 범위 검증. 아래 stack 검증기에 위임한다. |

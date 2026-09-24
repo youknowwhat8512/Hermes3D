@@ -12,6 +12,13 @@
 #   hermes bin  : $HERMES_BIN, else <hermes home>/hermes-agent/venv/bin/hermes,
 #                 else `hermes` on PATH
 # Both overrides exist so launchd can run this with a minimal PATH.
+#
+# RESERVED PORT: the office backend port (9137) belongs to the
+# dev.ja-office.hermes-backend LaunchAgent alone. A second hand-started backend
+# on it wins the bind race, leaves launchd in an EADDRINUSE retry loop, and the
+# office then talks to an upstream holding a different session token — HTTP 200
+# on both ports while the UI shows "Gateway closed (1011): connect failed".
+# Only launchd may start that port; see docs/ops/hermes-backend-launchd.md.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +26,32 @@ REPO_ROOT="${JA_OFFICE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ENV_FILE="$REPO_ROOT/.env"
 MODE="${1:-serve}"
 PORT="${2:-9120}"
+
+RESERVED_PORT="${JA_OFFICE_BACKEND_PORT:-9137}"
+RESERVED_LABEL="dev.ja-office.hermes-backend"
+
+# Refuse before reading .env so a rejected run cannot even load the token.
+if [ "$PORT" = "$RESERVED_PORT" ] \
+   && [ "${JA_OFFICE_LAUNCHD_MANAGED:-}" != "$RESERVED_LABEL" ]; then
+  cat >&2 <<EOF
+refusing to start: 127.0.0.1:$RESERVED_PORT is owned by the $RESERVED_LABEL
+LaunchAgent, and this invocation is not that job.
+
+Starting a second backend here is what produces "Gateway closed (1011):
+connect failed" in the office UI: two processes race for the port and the
+survivor holds a different session token than the one the app proxies with.
+
+Use the managed paths instead:
+  scripts/open-ja-office.sh                        # verify + open the office
+  scripts/launchd/install-hermes-backend.sh        # (re)install the service
+  launchctl kickstart -k gui/\$(id -u)/$RESERVED_LABEL   # restart it
+  scripts/launchd/verify-ja-office-stack.sh        # check ownership + ws
+
+For an unmanaged experiment, pick another port, e.g.:
+  $0 $MODE 9199
+EOF
+  exit 1
+fi
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "missing env file: $ENV_FILE" >&2
